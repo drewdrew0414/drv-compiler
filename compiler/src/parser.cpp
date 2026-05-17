@@ -337,6 +337,18 @@ StmtPtr Parser::parseStmt() {
 
     if (k == TK::KwIf)        { auto s = parseIfStmt();       s->annotations = annots; return s; }
     if (k == TK::KwWhile)     { auto s = parseWhileStmt();    s->annotations = annots; return s; }
+    if (k == TK::KwWhere) {
+        // where (cond) { ... } otherwise { ... }
+        advance();
+        auto n = std::make_unique<IfStmt>(); n->line = peek().line;
+        expect(TK::LParen, "expected '('");
+        n->cond = parseExpr();
+        expect(TK::RParen, "expected ')'");
+        n->then_body = parseBlock();
+        if (check(TK::KwOtherwise)) { advance(); n->else_body = parseBlock(); }
+        n->annotations = annots;
+        return n;
+    }
     if (k == TK::KwSwitch)    { auto s = parseSwitchStmt();   s->annotations = annots; return s; }
     if (k == TK::KwMatch)     { auto s = parseMatchStmt();    s->annotations = annots; return s; }
     if (k == TK::KwTry)       { auto s = parseTryCatchStmt(); s->annotations = annots; return s; }
@@ -878,6 +890,14 @@ ExprPtr Parser::parsePrimary() {
     int line = peek().line, col = peek().col;
     TK k = peek().kind;
 
+    // await expr → UnaryExpr("await", expr)
+    if (k == TK::KwAwait) {
+        advance();
+        auto n = std::make_unique<UnaryExpr>(); n->line = line;
+        n->op = "await"; n->operand = parseExpr();
+        return n;
+    }
+
     // lambda shorthand: |x| -> ...
     if (k == TK::Lambda || (k == TK::LBracket && /* capture list */true)) {
         if (k == TK::Lambda) return parseLambda();
@@ -889,7 +909,16 @@ ExprPtr Parser::parsePrimary() {
         }
     }
 
-    if (k == TK::LitInt)    { auto n=std::make_unique<IntLit>(); n->line=line; n->value=std::stol(advance().value); return n; }
+    if (k == TK::LitInt) {
+        auto n=std::make_unique<IntLit>(); n->line=line;
+        std::string v=advance().value;
+        if (v.size()>2 && v[0]=='0' && (v[1]=='b'||v[1]=='B'))
+            n->value = std::stol(v.substr(2), nullptr, 2);
+        else if (v.size()>2 && v[0]=='0' && (v[1]=='x'||v[1]=='X'))
+            n->value = std::stol(v.substr(2), nullptr, 16);
+        else n->value = std::stol(v);
+        return n;
+    }
     if (k == TK::LitLong)   { auto n=std::make_unique<LongLit>(); n->line=line; std::string v=advance().value; v.pop_back(); n->value=std::stoll(v); return n; }
     if (k == TK::LitDouble) { auto n=std::make_unique<DoubleLit>(); n->line=line; n->value=std::stod(advance().value); return n; }
     if (k == TK::LitFloat)  { auto n=std::make_unique<FloatLit>(); n->line=line; n->value=std::stof(advance().value); return n; }

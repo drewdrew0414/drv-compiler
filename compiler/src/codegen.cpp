@@ -26,10 +26,12 @@ std::string Codegen::mapBuiltinType(const std::string& name) {
     if (name=="Map")     return "std::unordered_map";
     if (name=="Own")     return "std::unique_ptr";
     if (name=="Ref")     return "std::shared_ptr";
-    if (name=="Borrow")  return "const ";
+    if (name=="Borrow")  return "const ";       // Borrow<T> → const T& (append & in mapType)
+    if (name=="Union")   return "std::variant";
     if (name=="Option")  return "std::optional";
     if (name=="Result")  return "DrvResult";
     if (name=="Self")    return "auto";
+    if (name=="arg")     return "std::vector<std::string>";
     return name; // user-defined types pass through
 }
 
@@ -57,7 +59,14 @@ std::string Codegen::mapType(const TypeRef& tr) {
         return "std::vector<" + base + ">";
     }
 
-    if (tr.is_mut) base = base; // mut is just a note, not a C++ keyword
+    // Borrow<T> → const T&, mut Borrow<T> → T&
+    if (tr.name == "Borrow") {
+        if (!tr.args.empty()) {
+            std::string inner = mapType(tr.args[0]);
+            return (tr.is_mut ? "" : "const ") + inner + "&";
+        }
+        return tr.is_mut ? "auto&" : "const auto&";
+    }
 
     return base;
 }
@@ -88,10 +97,14 @@ std::string Codegen::mapBuiltinCall(const std::string& name, const ExprList& arg
     if (name=="fma")    return "std::fma(" + a(0) + ", " + a(1) + ", " + a(2) + ")";
     if (name=="likely") return "[[likely]] " + a(0);
     if (name=="unlikely") return "[[unlikely]] " + a(0);
-    if (name=="sum")    return "__drv_sum(" + a(0) + ")";
-    if (name=="mean")   return "__drv_mean(" + a(0) + ")";
-    if (name=="dot")    return "__drv_dot(" + a(0) + ", " + a(1) + ")";
-    if (name=="norm")   return "__drv_norm(" + a(0) + ")";
+    if (name=="sum")       return "__drv_sum(" + a(0) + ")";
+    if (name=="mean")      return "__drv_mean(" + a(0) + ")";
+    if (name=="dot")       return "__drv_dot(" + a(0) + ", " + a(1) + ")";
+    if (name=="norm")      return "__drv_norm(" + a(0) + ")";
+    if (name=="std")       return "__drv_std_dev(" + a(0) + ")";
+    if (name=="median")    return "__drv_median(" + a(0) + ")";
+    if (name=="min_index") return "__drv_min_index(" + a(0) + ")";
+    if (name=="max_index") return "__drv_max_index(" + a(0) + ")";
     if (name=="sort")   return "__drv_sort(" + a(0) + ")";
     if (name=="reverse") return "__drv_reverse(" + a(0) + ")";
     if (name=="range")  return args.size()==1 ? "__drv_range(0," + a(0) + ")" : "__drv_range(" + a(0) + "," + a(1) + ")";
@@ -148,7 +161,13 @@ std::string Codegen::mapBuiltinNamespace(const std::string& ns, const std::strin
         if (fn=="replace")     return "__drv_replace(" + a(0) + ", " + a(1) + ", " + a(2) + ")";
         if (fn=="length"||fn=="size") return "static_cast<int64_t>(" + a(0) + ".size())";
         if (fn=="split")       return "__drv_split(" + a(0) + ", " + a(1) + ")";
-        if (fn=="format")      return a(0);  // placeholder
+        if (fn=="format")         return a(0);  // placeholder
+        if (fn=="left")           return a(0) + ".substr(0," + a(1) + ")";
+        if (fn=="right")          return "(" + a(0) + ".size()>=(size_t)" + a(1) + "?" + a(0) + ".substr(" + a(0) + ".size()-" + a(1) + "):" + a(0) + ")";
+        if (fn=="char_code")      return "static_cast<int32_t>(" + a(0) + "[" + a(1) + "])";
+        if (fn=="from_char_code") return "std::string(1,static_cast<char>(" + a(0) + "))";
+        if (fn=="to_bool")        return "(" + a(0) + "==\"true\"||" + a(0) + "==\"1\")";
+        if (fn=="simd_find")      return "static_cast<int64_t>(" + a(0) + ".find(" + a(1) + "))";
     }
     // lst.*
     if (ns=="lst") {
@@ -177,6 +196,7 @@ std::string Codegen::mapBuiltinNamespace(const std::string& ns, const std::strin
         if (fn=="count")    return "__drv_lst_count(" + a(0) + ", " + a(1) + ")";
         if (fn=="slice")    return "__drv_lst_slice(" + a(0) + ", " + a(1) + ", " + a(2) + ")";
         if (fn=="extend")   return a(0) + ".insert(" + a(0) + ".end()," + a(1) + ".begin()," + a(1) + ".end())";
+        if (fn=="take")     return "__drv_lst_take(" + a(0) + ", " + a(1) + ")";
     }
     // map.*
     if (ns=="map") {
@@ -349,8 +369,9 @@ std::string Codegen::emitBinary(const BinaryExpr& e) {
 
 std::string Codegen::emitUnary(const UnaryExpr& e) {
     std::string v = emitExpr(*e.operand);
-    if (e.op=="not") return "!" + v;
-    if (e.prefix)    return e.op + v;
+    if (e.op=="not")   return "!" + v;
+    if (e.op=="await") return v + ".get()";  // std::future::get()
+    if (e.prefix)      return e.op + v;
     return v + e.op;
 }
 
@@ -397,8 +418,9 @@ std::string Codegen::emitCall(const CallExpr& e) {
 
 std::string Codegen::emitMember(const MemberExpr& e) {
     std::string obj = emitExpr(*e.object);
-    // Use -> for smart pointer types
+    // 'this' is a pointer in C++ → use ->
     if (auto id = dynamic_cast<const IdentExpr*>(e.object.get())) {
+        if (id->name == "this") return "this->" + e.field;
         if (smart_ptr_vars_.count(id->name)) return obj + "->" + e.field;
     }
     return obj + "." + e.field;
@@ -467,19 +489,27 @@ void Codegen::emitFuncAnnotations(const std::vector<std::string>& annots) {
         if (a=="@noinline") writeil("[[gnu::noinline]]");
         if (a=="@pure")     writeil("[[gnu::pure]]");
         if (a=="@fastcall") writeil("[[gnu::regparm(3)]]");
-        if (a=="@noalias")  {} // handled at parameter level
+        if (a=="@noalias")  writeil("/* @noalias — params marked __restrict__ */");
         if (a=="@bench")    {} // injected as RAII timer wrapper
         if (a=="@trace")    {} // injected as branch instrumentation
         if (a=="@threadsafe") writeil("/* @threadsafe */");
-        if (a=="@alloc")    {} // documentation only
-        if (a=="@io")       {} // documentation only
+        if (a=="@alloc")    writeil("/* @alloc — allocates memory */");
+        if (a=="@io")       writeil("/* @io — performs I/O */");
+        if (a=="@specialize") writeil("/* @specialize — compiler may specialize this function */");
+        // Toulmin annotations → structured comments only
+        if (a.size() > 8 && a.substr(0,8) == "@warrant")  writeil("/* @warrant: " + a.substr(8) + " */");
+        if (a.size() > 9 && a.substr(0,9) == "@rebuttal") writeil("/* @rebuttal: " + a.substr(9) + " */");
+        if (a.size() > 8 && a.substr(0,8) == "@defeats") writeil("/* @defeats: " + a.substr(8) + " */");
+        if (a=="@warrant" || a=="@rebuttal" || a=="@defeats") writeil("/* Toulmin annotation */");
     }
 }
 
 void Codegen::emitVarAnnotations(const std::vector<std::string>& annots, std::string& prefix) {
     for (auto& a : annots) {
-        if (a=="@stack") prefix = "/* @stack */ ";
-        if (a=="@heap")  prefix = "/* @heap */ ";
+        if (a=="@stack")      prefix = "/* @stack */ ";
+        if (a=="@heap")       prefix = "/* @heap */ ";
+        if (a=="@local")      prefix = "/* @local */ ";
+        if (a=="@layout_soa") prefix = "/* @layout_soa: SoA layout — SIMD-optimized */ ";
     }
 }
 
@@ -1057,6 +1087,7 @@ std::string Codegen::emit(const Program& prog) {
     writeln("#include <sstream>");
     writeln("#include <stdexcept>");
     writeln("#include <chrono>");
+    writeln("#include <filesystem>");
     writeln("#include <cstdio>");
     writeln("#include <cstdlib>");
     writeln("#include <cassert>");
@@ -1095,6 +1126,9 @@ std::string Codegen::emit(const Program& prog) {
     writeln("// ── drv runtime ──────────────────────────────────────────────────");
     writeln("template<typename T> static std::string __drv_to_str(const T& v) {");
     writeln("    if constexpr (std::is_same_v<T,bool>) return v ? \"true\" : \"false\";");
+    writeln("    else if constexpr (requires { std::visit([](auto&&){},(v)); }) {");
+    writeln("        std::string r; std::visit([&r](auto&& x){ r=__drv_to_str(x); }, v); return r;");
+    writeln("    }");
     writeln("    else { std::ostringstream os; os << v; return os.str(); }");
     writeln("}");
     writeln("static void __drv_print() { std::cout << '\\n'; }");
@@ -1158,6 +1192,17 @@ std::string Codegen::emit(const Program& prog) {
     writeln("}");
     writeln("static bool __drv_io_delete_file(const std::string&p){return std::remove(p.c_str())==0;}");
     writeln("static bool __drv_io_make_dir(const std::string&p){return std::system((\"mkdir -p \"+p).c_str())==0;}");
+    writeln("static std::string __drv_io_mmap_read(const std::string&p){");
+    writeln("    // mmap_read: fall back to read_file for portability");
+    writeln("    return __drv_io_read_file(p);}");
+    writeln("static std::vector<std::string> __drv_io_list_dir(const std::string&p){");
+    writeln("    std::vector<std::string> r;");
+    writeln("#if __has_include(<filesystem>)");
+    writeln("    for(auto&e:std::filesystem::directory_iterator(p))r.push_back(e.path().string());");
+    writeln("#else");
+    writeln("    (void)p;");
+    writeln("#endif");
+    writeln("    return r;}");
     writeln("// Sys");
     writeln("static int __drv_sys_exec(const std::string&c){return std::system(c.c_str());}");
     writeln("#ifdef _MSC_VER");
@@ -1173,6 +1218,16 @@ std::string Codegen::emit(const Program& prog) {
     writeln("static int64_t __drv_sys_time(){");
     writeln("    return std::chrono::duration_cast<std::chrono::seconds>(");
     writeln("        std::chrono::system_clock::now().time_since_epoch()).count();}");
+    writeln("static void __drv_sys_affinity(int core) {");
+    writeln("#ifdef __linux__");
+    writeln("    cpu_set_t s; CPU_ZERO(&s); CPU_SET(core,&s);");
+    writeln("    pthread_setaffinity_np(pthread_self(),sizeof(s),&s);");
+    writeln("#else");
+    writeln("    (void)core; // affinity not supported on this platform");
+    writeln("#endif");
+    writeln("}");
+    writeln("static void __drv_wait_tick(int64_t n) { std::this_thread::sleep_for(std::chrono::nanoseconds(n)); }");
+    writeln("static void __drv_wait_seconds(int64_t s) { std::this_thread::sleep_for(std::chrono::seconds(s)); }");
     writeln("// Collections");
     writeln("template<typename T>");
     writeln("static T __drv_lst_pop(std::vector<T>&v){auto r=v.back();v.pop_back();return r;}");
@@ -1263,6 +1318,19 @@ std::string Codegen::emit(const Program& prog) {
     writeln("static double __drv_norm(const std::vector<double>&v){double s=0;for(auto x:v)s+=x*x;return std::sqrt(s);}");
     writeln("static double __drv_dot(const std::vector<double>&a,const std::vector<double>&b){");
     writeln("    double s=0;for(size_t i=0;i<std::min(a.size(),b.size());i++)s+=a[i]*b[i];return s;}");
+    writeln("static double __drv_std_dev(const std::vector<double>&v){");
+    writeln("    if(v.empty())return 0; double m=__drv_mean(v),s=0;");
+    writeln("    for(auto x:v)s+=(x-m)*(x-m); return std::sqrt(s/v.size());}");
+    writeln("static double __drv_median(std::vector<double> v){");
+    writeln("    if(v.empty())return 0; std::sort(v.begin(),v.end());");
+    writeln("    size_t n=v.size(); return n%2?v[n/2]:(v[n/2-1]+v[n/2])/2.0;}");
+    writeln("static int64_t __drv_min_index(const std::vector<double>&v){");
+    writeln("    return v.empty()?-1:std::min_element(v.begin(),v.end())-v.begin();}");
+    writeln("static int64_t __drv_max_index(const std::vector<double>&v){");
+    writeln("    return v.empty()?-1:std::max_element(v.begin(),v.end())-v.begin();}");
+    writeln("template<typename T>");
+    writeln("static std::vector<T> __drv_lst_take(const std::vector<T>&v,int64_t n){");
+    writeln("    return{v.begin(),v.begin()+std::min((size_t)n,v.size())};}");
     writeln("// ─────────────────────────────────────────────────────────────────");
     writeln();
 
