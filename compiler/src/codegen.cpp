@@ -1,6 +1,7 @@
 #include "codegen.h"
 #include <cassert>
 #include <sstream>
+#include <iomanip>
 #include <stdexcept>
 
 namespace drv {
@@ -100,7 +101,10 @@ std::string Codegen::mapBuiltinCall(const std::string& name, const ExprList& arg
     if (name=="replace") return "__drv_replace(" + a(0) + ", " + a(1) + ", " + a(2) + ")";
     if (name=="assert_that") return "__drv_assert_that(" + a(0) + ", " + a(1) + ")";
     if (name=="compile_eval") return "/* compile_eval */ (" + a(0) + ")";
-    if (name=="__array_init") return "{" + as + "}";
+    if (name=="__array_init") {
+        if (args.empty()) return "{}";
+        return "std::vector{" + as + "}";  // CTAD deduces element type
+    }
     if (name=="__map_init")   return "{}"; // empty map literal
 
     return name + "(" + as + ")";
@@ -290,7 +294,13 @@ static std::string argsStr(const ExprList& args, Codegen* cg) {
 std::string Codegen::emitExpr(const Expr& e) {
     if (auto p = dynamic_cast<const IntLit*>(&e))    return std::to_string(p->value);
     if (auto p = dynamic_cast<const LongLit*>(&e))   return std::to_string(p->value) + "LL";
-    if (auto p = dynamic_cast<const DoubleLit*>(&e)) { std::ostringstream ss; ss << p->value; return ss.str(); }
+    if (auto p = dynamic_cast<const DoubleLit*>(&e)) {
+        std::ostringstream ss; ss << std::setprecision(17) << p->value;
+        std::string s = ss.str();
+        // ensure it has a decimal point so C++ treats it as double, not int
+        if (s.find('.') == std::string::npos && s.find('e') == std::string::npos) s += ".0";
+        return s;
+    }
     if (auto p = dynamic_cast<const FloatLit*>(&e))  { std::ostringstream ss; ss << p->value << "f"; return ss.str(); }
     if (auto p = dynamic_cast<const BoolLit*>(&e))   return p->value ? "true" : "false";
     if (auto p = dynamic_cast<const CharLit*>(&e))   return std::string("'") + p->value + "'";
