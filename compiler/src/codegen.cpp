@@ -142,6 +142,13 @@ std::string Codegen::mapBuiltinNamespace(const std::string& ns, const std::strin
         if (fn=="trim_right")  return "__drv_str_trim_right(" + a(0) + ")";
         if (fn=="remove")      return "__drv_str_remove(" + a(0) + ", " + a(1) + ")";
         if (fn=="truncate")    return a(0) + ".substr(0, " + a(1) + ")";
+        if (fn=="to_upper"||fn=="upper") return "__drv_toUpper(" + a(0) + ")";
+        if (fn=="to_lower"||fn=="lower") return "__drv_toLower(" + a(0) + ")";
+        if (fn=="trim")        return "__drv_trim(" + a(0) + ")";
+        if (fn=="replace")     return "__drv_replace(" + a(0) + ", " + a(1) + ", " + a(2) + ")";
+        if (fn=="length"||fn=="size") return "static_cast<int64_t>(" + a(0) + ".size())";
+        if (fn=="split")       return "__drv_split(" + a(0) + ", " + a(1) + ")";
+        if (fn=="format")      return a(0);  // placeholder
     }
     // lst.*
     if (ns=="lst") {
