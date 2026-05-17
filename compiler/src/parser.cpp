@@ -1,0 +1,962 @@
+#include "parser.h"
+#include <stdexcept>
+#include <sstream>
+#include <cassert>
+
+namespace drv {
+
+static const Token EOF_TOK{TK::Eof, "", 0, 0};
+
+Parser::Parser(std::vector<Token> tokens, std::string filename)
+    : toks_(std::move(tokens)), file_(std::move(filename)) {}
+
+// ── navigation ───────────────────────────────────────────────────────────────
+const Token& Parser::peek(int offset) const noexcept {
+    size_t idx = pos_ + offset;
+    return idx < toks_.size() ? toks_[idx] : EOF_TOK;
+}
+
+const Token& Parser::advance() noexcept {
+    if (pos_ < toks_.size()) return toks_[pos_++];
+    return EOF_TOK;
+}
+
+bool Parser::match(TK k) noexcept {
+    if (check(k)) { advance(); return true; }
+    return false;
+}
+
+bool Parser::match2(TK a, TK b) noexcept {
+    if (check(a) && peek(1).kind == b) { advance(); advance(); return true; }
+    return false;
+}
+
+const Token& Parser::expect(TK k, const std::string& msg) {
+    if (!check(k)) { error(msg + " (got '" + peek().value + "')"); }
+    return advance();
+}
+
+void Parser::skipSemi() {
+    while (check(TK::Semi)) advance();
+}
+
+void Parser::error(const Token& t, const std::string& msg) {
+    errors_.push_back(file_ + ":" + std::to_string(t.line) + ":" +
+                      std::to_string(t.col) + ": error: " + msg);
+}
+
+void Parser::sync() {
+    while (!check(TK::Eof) && !check(TK::Semi) && !check(TK::RBrace))
+        advance();
+    if (check(TK::Semi)) advance();
+}
+
+// ── annotations ──────────────────────────────────────────────────────────────
+std::vector<std::string> Parser::parseAnnotations() {
+    std::vector<std::string> annots;
+    while (check(TK::At)) {
+        annots.push_back(advance().value);
+    }
+    return annots;
+}
+
+// ── type parsing ─────────────────────────────────────────────────────────────
+TypeRef Parser::parseTypeRef() {
+    TypeRef tr;
+    // mut prefix
+    if (match(TK::KwMut)) tr.is_mut = true;
+
+    if (check(TK::Ident) || peek().kind >= TK::KwInt) {
+        tr.name = advance().value;
+    } else {
+        error("expected type name");
+        tr.name = "void";
+    }
+
+    // generic args: Foo<T, U>
+    if (check(TK::Lt)) {
+        advance();
+        while (!check(TK::Gt) && !check(TK::Eof)) {
+            tr.args.push_back(parseTypeRef());
+            if (!match(TK::Comma)) break;
+        }
+        expect(TK::Gt, "expected '>' after generic type args");
+    }
+
+    // array suffix: int[]
+    if (check(TK::LBracket) && peek(1).kind == TK::RBracket) {
+        advance(); advance();
+        tr.is_array = true;
+    }
+
+    return tr;
+}
+
+Param Parser::parseParam() {
+    Param p;
+    p.type = parseTypeRef();
+    if (check(TK::Ident)) {
+        p.name = advance().value;
+    }
+    if (match(TK::Eq)) {
+        p.default_val = parseExpr();
+    }
+    return p;
+}
+
+std::vector<Param> Parser::parseParamList() {
+    std::vector<Param> params;
+    expect(TK::LParen, "expected '('");
+    while (!check(TK::RParen) && !check(TK::Eof)) {
+        params.push_back(parseParam());
+        if (!match(TK::Comma)) break;
+    }
+    expect(TK::RParen, "expected ')'");
+    return params;
+}
+
+// ── block ────────────────────────────────────────────────────────────────────
+StmtList Parser::parseBlock() {
+    expect(TK::LBrace, "expected '{'");
+    StmtList stmts;
+    while (!check(TK::RBrace) && !check(TK::Eof)) {
+        try {
+            stmts.push_back(parseStmt());
+        } catch (...) { sync(); }
+    }
+    expect(TK::RBrace, "expected '}'");
+    return stmts;
+}
+
+// ── top level ────────────────────────────────────────────────────────────────
+Program Parser::parse() {
+    Program prog;
+    while (!check(TK::Eof)) {
+        skipSemi();
+        if (check(TK::Eof)) break;
+        try {
+            prog.stmts.push_back(parseTopLevel());
+        } catch (...) { sync(); }
+        skipSemi();
+    }
+    return prog;
+}
+
+StmtPtr Parser::parseTopLevel() {
+    auto annots = parseAnnotations();
+
+    // module / use
+    if (check(TK::KwModule)) return parseModuleDecl();
+    if (check(TK::KwUse))    return parseUseDecl();
+    if (check(TK::KwExtern)) return parseExternDecl();
+    if (check(TK::KwDimKw))  return parseDimDecl();
+    if (check(TK::KwStaticIf)) return parseStaticIfStmt();
+
+    // collect modifiers
+    std::vector<std::string> mods;
+    while (true) {
+        TK k = peek().kind;
+        if (k==TK::KwPublic||k==TK::KwPrivate||k==TK::KwStatic||
+            k==TK::KwAbstract||k==TK::KwFinal||k==TK::KwSynchronized||
+            k==TK::KwConst||k==TK::KwUnsigned||k==TK::KwMut) {
+            mods.push_back(advance().value);
+        } else break;
+    }
+
+    if (check(TK::KwClass))   return parseClassDecl(mods);
+    if (check(TK::KwTrait))   return parseTraitDecl();
+    if (check(TK::KwImpl))    return parseImplDecl();
+    if (check(TK::KwAsync)) {
+        advance();
+        auto fn = parseFuncDecl(mods, true);
+        fn->annotations = annots;
+        return fn;
+    }
+
+    // function: RetType name<T>(params) { }
+    // or variable: RetType name = ...;
+    // heuristic: if next token after type is ident and then '(', it's a function
+    auto stmt = parseStmt();
+    stmt->annotations = annots;
+    return stmt;
+}
+
+StmtPtr Parser::parseModuleDecl() {
+    advance(); // module
+    auto n = std::make_unique<ModuleDecl>();
+    n->line = peek().line;
+    n->name = expect(TK::Ident, "expected module name").value;
+    expect(TK::Semi, "expected ';' after module declaration");
+    return n;
+}
+
+StmtPtr Parser::parseUseDecl() {
+    advance(); // use
+    auto n = std::make_unique<UseDecl>();
+    n->line = peek().line;
+    n->module = expect(TK::Ident, "expected module name").value;
+    while (check(TK::ColonColon)) {
+        advance();
+        n->symbol = expect(TK::Ident, "expected symbol name").value;
+    }
+    expect(TK::Semi, "expected ';'");
+    return n;
+}
+
+StmtPtr Parser::parseExternDecl() {
+    advance(); // extern
+    auto n = std::make_unique<ExternDecl>();
+    n->line = peek().line;
+    if (check(TK::Ident) && peek().value == "unsafe_legacy") {
+        n->unsafe_legacy = true; advance();
+    }
+    if (check(TK::LitString)) {
+        n->abi = advance().value;
+    }
+    n->declarations = parseBlock();
+    return n;
+}
+
+StmtPtr Parser::parseDimDecl() {
+    advance(); // dim
+    auto n = std::make_unique<DimDecl>();
+    n->line = peek().line;
+    n->name = expect(TK::Ident, "expected dimension name").value;
+    expect(TK::Eq, "expected '='");
+    n->symbol = expect(TK::LitString, "expected unit symbol string").value;
+    expect(TK::Semi, "expected ';'");
+    return n;
+}
+
+StmtPtr Parser::parseClassDecl(std::vector<std::string> mods) {
+    advance(); // class
+    auto n = std::make_unique<ClassDecl>();
+    n->line = peek().line;
+    n->modifiers = mods;
+    n->name = expect(TK::Ident, "expected class name").value;
+    if (match(TK::KwExtends)) {
+        n->base = expect(TK::Ident, "expected base class name").value;
+    }
+    expect(TK::LBrace, "expected '{'");
+    while (!check(TK::RBrace) && !check(TK::Eof)) {
+        auto annots = parseAnnotations();
+        std::vector<std::string> fmods;
+        while (check(TK::KwPublic)||check(TK::KwPrivate)||check(TK::KwStatic)||
+               check(TK::KwAbstract)||check(TK::KwFinal)) {
+            fmods.push_back(advance().value);
+        }
+        // function or field
+        auto stmt = parseStmt();
+        stmt->annotations = annots;
+        // classify: FuncDecl → method, VarDecl → field (we store all as methods)
+        n->methods.push_back(std::move(stmt));
+        skipSemi();
+    }
+    expect(TK::RBrace, "expected '}'");
+    return n;
+}
+
+StmtPtr Parser::parseTraitDecl() {
+    advance(); // trait
+    auto n = std::make_unique<TraitDecl>();
+    n->line = peek().line;
+    n->name = expect(TK::Ident, "expected trait name").value;
+    n->body = parseBlock();
+    return n;
+}
+
+StmtPtr Parser::parseImplDecl() {
+    advance(); // impl
+    auto n = std::make_unique<ImplDecl>();
+    n->line = peek().line;
+    n->trait_name = expect(TK::Ident, "expected trait name").value;
+    if (check(TK::KwFor)) { advance(); }
+    n->class_name = expect(TK::Ident, "expected class name").value;
+    n->methods = parseBlock();
+    return n;
+}
+
+StmtPtr Parser::parseFuncDecl(std::vector<std::string> mods, bool is_async) {
+    auto n = std::make_unique<FuncDecl>();
+    n->line = peek().line;
+    n->modifiers = mods;
+    n->is_async = is_async;
+    n->ret_type  = parseTypeRef();
+
+    // name and optional generic type params
+    n->name = expect(TK::Ident, "expected function name").value;
+    if (check(TK::Lt)) {
+        advance();
+        while (!check(TK::Gt) && !check(TK::Eof)) {
+            n->type_params.push_back(advance().value);
+            if (check(TK::KwIn) || (check(TK::Ident) && peek().value == "implements")) {
+                advance();
+                // collect trait bounds
+                n->trait_bounds.push_back(advance().value);
+                while (check(TK::Plus)) { advance(); n->trait_bounds.push_back(advance().value); }
+            }
+            if (!match(TK::Comma)) break;
+        }
+        expect(TK::Gt, "expected '>'");
+    }
+
+    n->params = parseParamList();
+    if (check(TK::LBrace)) {
+        n->body = parseBlock();
+    } else {
+        // abstract method (trait signature) — no body
+        expect(TK::Semi, "expected ';' or '{' after function signature");
+    }
+    return n;
+}
+
+// ── statements ───────────────────────────────────────────────────────────────
+StmtPtr Parser::parseStmt() {
+    skipSemi();
+    auto annots = parseAnnotations();
+
+    TK k = peek().kind;
+
+    if (k == TK::KwIf)        { auto s = parseIfStmt();       s->annotations = annots; return s; }
+    if (k == TK::KwWhile)     { auto s = parseWhileStmt();    s->annotations = annots; return s; }
+    if (k == TK::KwSwitch)    { auto s = parseSwitchStmt();   s->annotations = annots; return s; }
+    if (k == TK::KwMatch)     { auto s = parseMatchStmt();    s->annotations = annots; return s; }
+    if (k == TK::KwTry)       { auto s = parseTryCatchStmt(); s->annotations = annots; return s; }
+    if (k == TK::KwSpawn)     { auto s = parseSpawnStmt();    s->annotations = annots; return s; }
+    if (k == TK::KwStaticIf)  { auto s = parseStaticIfStmt(); s->annotations = annots; return s; }
+    if (k == TK::KwExists)    { auto s = parseExistsStmt();   s->annotations = annots; return s; }
+    if (k == TK::At && peek().value.size() > 1 && peek().value.substr(1) == "region") {
+        advance();
+        return parseRegionStmt();
+    }
+
+    if (k == TK::KwReturn) {
+        advance();
+        auto s = std::make_unique<ReturnStmt>();
+        s->annotations = annots;
+        if (!check(TK::Semi)) s->value = parseExpr();
+        expect(TK::Semi, "expected ';' after return");
+        return s;
+    }
+    if (k == TK::KwBreak)    { advance(); auto s = std::make_unique<BreakStmt>();    s->annotations=annots; expect(TK::Semi,"expected ';'"); return s; }
+    if (k == TK::KwContinue) { advance(); auto s = std::make_unique<ContinueStmt>(); s->annotations=annots; expect(TK::Semi,"expected ';'"); return s; }
+    if (k == TK::KwThrow)    { advance(); auto s = std::make_unique<ThrowStmt>();   s->annotations=annots; s->value=parseExpr(); expect(TK::Semi,"expected ';'"); return s; }
+    if (k == TK::KwPass)     { advance(); auto s = std::make_unique<PassStmt>();    s->annotations=annots; expect(TK::Semi,"expected ';'"); return s; }
+
+    // parallel / simd for
+    bool is_parallel = false, is_simd = false;
+    std::vector<std::string> reductions;
+    if (k == TK::KwParallel) { is_parallel = true; advance(); k = peek().kind; }
+    if (k == TK::KwSimd)     { is_simd = true;     advance(); k = peek().kind; }
+    if (k == TK::KwFor || (is_parallel || is_simd)) {
+        if (k != TK::KwFor) { error("expected 'for'"); }
+        else advance();
+        // collect reductions
+        while (check(TK::KwReduction) || (check(TK::Ident) && peek().value == "reduction")) {
+            advance();
+            expect(TK::LParen, "expected '(' after reduction");
+            std::string spec;
+            spec += advance().value; // operator
+            expect(TK::Colon, "expected ':'");
+            spec += ":" + advance().value; // variable
+            expect(TK::RParen, "expected ')'");
+            reductions.push_back(spec);
+        }
+        return parseForStmt(is_simd, is_parallel, reductions);
+    }
+
+    // lazy var ...
+    bool is_lazy = false;
+    if (k == TK::KwLazy) { is_lazy = true; advance(); k = peek().kind; }
+
+    // collect modifiers for var/func
+    std::vector<std::string> mods;
+    while (true) {
+        TK mk = peek().kind;
+        if (mk==TK::KwPublic||mk==TK::KwPrivate||mk==TK::KwStatic||
+            mk==TK::KwConst||mk==TK::KwUnsigned||mk==TK::KwMut||
+            mk==TK::KwAbstract||mk==TK::KwFinal) {
+            mods.push_back(advance().value);
+        } else break;
+    }
+
+    bool is_async = false;
+    if (check(TK::KwAsync)) { is_async = true; advance(); }
+
+    // lookahead: is this a declaration (type + ident) or expression?
+    // heuristic: if current token looks like a type and next is ident
+    bool looksLikeDecl = false;
+    {
+        TK t0 = peek().kind;
+        bool typeStart = (t0 >= TK::KwInt && t0 <= TK::KwDim) || t0 == TK::Ident || t0 == TK::KwVar || t0 == TK::KwRef;
+        if (typeStart) {
+            // save pos and try
+            size_t saved = pos_;
+            try {
+                TypeRef tr = parseTypeRef();
+                if (check(TK::Ident)) { looksLikeDecl = true; }
+            } catch (...) {}
+            pos_ = saved;
+        }
+    }
+
+    if (looksLikeDecl) {
+        // function or variable
+        size_t saved = pos_;
+        TypeRef tr = parseTypeRef();
+        if (check(TK::Ident)) {
+            std::string name = peek(1).kind == TK::LParen || peek(1).kind == TK::Lt
+                ? "" : peek().value;
+            bool isFunc = (peek(1).kind == TK::LParen || peek(1).kind == TK::Lt);
+            if (isFunc) {
+                pos_ = saved;
+                auto fn = parseFuncDecl(mods, is_async);
+                fn->annotations = annots;
+                if (is_lazy) static_cast<FuncDecl*>(fn.get())->modifiers.push_back("lazy");
+                return fn;
+            } else {
+                // variable decl
+                auto vd = std::make_unique<VarDecl>();
+                vd->line = peek().line;
+                vd->annotations = annots;
+                vd->type = tr;
+                vd->name = advance().value;
+                if (match(TK::Eq)) vd->init = parseExpr();
+                expect(TK::Semi, "expected ';' after variable declaration");
+                return vd;
+            }
+        }
+        pos_ = saved;
+    }
+
+    // expression statement
+    auto es = std::make_unique<ExprStmt>();
+    es->annotations = annots;
+    es->line = peek().line;
+    es->expr = parseExpr();
+    if (!check(TK::RBrace) && !check(TK::Eof))
+        expect(TK::Semi, "expected ';' after expression");
+    return es;
+}
+
+StmtPtr Parser::parseIfStmt() {
+    advance(); // if
+    auto n = std::make_unique<IfStmt>();
+    n->line = peek().line;
+    expect(TK::LParen, "expected '('");
+    n->cond = parseExpr();
+    expect(TK::RParen, "expected ')'");
+    n->then_body = parseBlock();
+    if (check(TK::KwElse)) {
+        advance();
+        if (check(TK::KwIf)) {
+            StmtList nested;
+            nested.push_back(parseIfStmt());
+            n->else_body = std::move(nested);
+        } else {
+            n->else_body = parseBlock();
+        }
+    }
+    return n;
+}
+
+StmtPtr Parser::parseForStmt(bool is_simd, bool is_parallel, std::vector<std::string> reds) {
+    // for (var in/of expr) { }
+    expect(TK::LParen, "expected '('");
+    std::string var = expect(TK::Ident, "expected loop variable").value;
+
+    if (check(TK::KwIn)) {
+        advance();
+        // range: expr..expr  or  expr
+        auto from = parseExpr();
+        if (check(TK::DotDot)) {
+            advance();
+            auto to = parseExpr();
+            expect(TK::RParen, "expected ')'");
+            auto n = std::make_unique<ForRangeStmt>();
+            n->line = from->line;
+            n->var = var; n->from = std::move(from); n->to = std::move(to);
+            n->is_simd = is_simd; n->is_parallel = is_parallel;
+            n->reductions = reds;
+            n->body = parseBlock();
+            return n;
+        }
+        // plain range with just from (error case)
+        expect(TK::RParen, "expected ')'");
+        auto n = std::make_unique<ForRangeStmt>();
+        n->var = var; n->from = std::move(from); n->is_simd = is_simd; n->is_parallel = is_parallel;
+        n->body = parseBlock();
+        return n;
+    }
+
+    if (check(TK::KwOf)) {
+        advance();
+        auto coll = parseExpr();
+        expect(TK::RParen, "expected ')'");
+        auto n = std::make_unique<ForEachStmt>();
+        n->line = coll->line;
+        n->var = var; n->collection = std::move(coll);
+        n->is_simd = is_simd; n->is_parallel = is_parallel;
+        n->reductions = reds;
+        n->body = parseBlock();
+        return n;
+    }
+
+    // C-style: (TypeRef var = init; cond; step)
+    // already consumed var as ident — parse C-style init
+    // re-interpret: the ident was the type name
+    // Build a simple ExprStmt for the init
+    // This is a fallback — real C-style parsing needs more lookahead
+    auto n = std::make_unique<ForCStyleStmt>();
+    n->line = peek().line;
+    // init expr
+    auto initExpr = std::make_unique<ExprStmt>();
+    initExpr->expr = parseExpr();
+    n->init = std::move(initExpr);
+    expect(TK::Semi, "expected ';'");
+    n->cond = parseExpr();
+    expect(TK::Semi, "expected ';'");
+    n->step = parseExpr();
+    expect(TK::RParen, "expected ')'");
+    n->body = parseBlock();
+    return n;
+}
+
+StmtPtr Parser::parseWhileStmt() {
+    advance();
+    auto n = std::make_unique<WhileStmt>();
+    n->line = peek().line;
+    expect(TK::LParen, "expected '('");
+    n->cond = parseExpr();
+    expect(TK::RParen, "expected ')'");
+    n->body = parseBlock();
+    return n;
+}
+
+StmtPtr Parser::parseSwitchStmt() {
+    advance();
+    auto n = std::make_unique<SwitchStmt>();
+    n->line = peek().line;
+    expect(TK::LParen, "expected '('");
+    n->expr = parseExpr();
+    expect(TK::RParen, "expected ')'");
+    expect(TK::LBrace, "expected '{'");
+    while (!check(TK::RBrace) && !check(TK::Eof)) {
+        CaseArm arm;
+        if (check(TK::KwCase)) {
+            advance();
+            if (check(TK::KwDefault)) { advance(); arm.is_default = true; }
+            else { expect(TK::LParen,"expected '('"); arm.value = parseExpr(); expect(TK::RParen,"expected ')'"); }
+        } else if (check(TK::KwDefault)) {
+            advance(); arm.is_default = true;
+        } else break;
+        expect(TK::Arrow, "expected '->'");
+        arm.body = parseBlock();
+        expect(TK::Semi, "expected ';'");
+        n->arms.push_back(std::move(arm));
+    }
+    expect(TK::RBrace, "expected '}'");
+    return n;
+}
+
+StmtPtr Parser::parseMatchStmt() {
+    advance();
+    auto n = std::make_unique<MatchStmt>();
+    n->line = peek().line;
+    n->expr = parseExpr();
+    expect(TK::LBrace, "expected '{'");
+    while (!check(TK::RBrace) && !check(TK::Eof)) {
+        MatchArm arm;
+        arm.pattern = advance().value;
+        if (check(TK::LParen)) {
+            advance();
+            arm.bind_var = advance().value;
+            expect(TK::RParen, "expected ')'");
+        }
+        expect(TK::FatArrow, "expected '=>'");
+        arm.body = parseBlock();
+        expect(TK::Semi, "expected ';'");
+        n->arms.push_back(std::move(arm));
+    }
+    expect(TK::RBrace, "expected '}'");
+    return n;
+}
+
+StmtPtr Parser::parseTryCatchStmt() {
+    advance();
+    auto n = std::make_unique<TryCatchStmt>();
+    n->line = peek().line;
+    n->try_body = parseBlock();
+    if (check(TK::KwCatch)) {
+        advance();
+        expect(TK::LParen, "expected '('");
+        n->catch_var = expect(TK::Ident, "expected catch variable").value;
+        expect(TK::RParen, "expected ')'");
+        n->catch_body = parseBlock();
+    }
+    return n;
+}
+
+StmtPtr Parser::parseRegionStmt() {
+    auto n = std::make_unique<RegionStmt>();
+    n->line = peek().line;
+    n->name = expect(TK::Ident, "expected region name").value;
+    n->body = parseBlock();
+    return n;
+}
+
+StmtPtr Parser::parseSpawnStmt() {
+    advance();
+    auto n = std::make_unique<SpawnStmt>();
+    n->line = peek().line;
+    n->body = parseBlock();
+    return n;
+}
+
+StmtPtr Parser::parseStaticIfStmt() {
+    advance();
+    auto n = std::make_unique<StaticIfStmt>();
+    n->line = peek().line;
+    expect(TK::LParen, "expected '('");
+    n->cond = parseExpr();
+    expect(TK::RParen, "expected ')'");
+    n->then_body = parseBlock();
+    if (check(TK::KwElse)) {
+        advance();
+        n->else_body = parseBlock();
+    }
+    return n;
+}
+
+StmtPtr Parser::parseExistsStmt() {
+    advance();
+    auto n = std::make_unique<ExistsStmt>();
+    n->line = peek().line;
+    expect(TK::LParen, "expected '('");
+    n->var = expect(TK::Ident, "expected variable name").value;
+    expect(TK::RParen, "expected ')'");
+    n->then_body = parseBlock();
+    if (check(TK::KwElse)) { advance(); n->else_body = parseBlock(); }
+    return n;
+}
+
+// ── expression parsing (recursive descent) ───────────────────────────────────
+ExprPtr Parser::parseExpr()       { return parsePipe(); }
+
+ExprPtr Parser::parsePipe() {
+    auto lhs = parseAssign();
+    while (check(TK::PipeGt)) {
+        advance();
+        auto rhs = parseAssign();
+        auto n = std::make_unique<PipeExpr>();
+        n->line = lhs->line;
+        n->left = std::move(lhs);
+        n->right = std::move(rhs);
+        lhs = std::move(n);
+    }
+    return lhs;
+}
+
+ExprPtr Parser::parseAssign() {
+    auto lhs = parseOr();
+    static const std::vector<TK> ASSIGN_OPS = {TK::Eq,TK::PlusEq,TK::MinusEq,TK::StarEq,TK::SlashEq,TK::PercentEq};
+    for (TK op : ASSIGN_OPS) {
+        if (check(op)) {
+            std::string opStr = advance().value;
+            auto rhs = parseAssign();
+            auto n = std::make_unique<BinaryExpr>();
+            n->line = lhs->line; n->op = opStr;
+            n->left = std::move(lhs); n->right = std::move(rhs);
+            return n;
+        }
+    }
+    return lhs;
+}
+
+#define BINARY_LEVEL(NAME, NEXT, ...)                                    \
+ExprPtr Parser::NAME() {                                                 \
+    auto lhs = NEXT();                                                   \
+    static const std::vector<TK> OPS = {__VA_ARGS__};                  \
+    for (bool going=true; going;) {                                      \
+        going = false;                                                   \
+        for (TK op : OPS) {                                              \
+            if (check(op)) {                                             \
+                std::string opStr = advance().value;                     \
+                auto rhs = NEXT();                                       \
+                auto n = std::make_unique<BinaryExpr>();                 \
+                n->line = lhs->line; n->op = opStr;                     \
+                n->left = std::move(lhs); n->right = std::move(rhs);    \
+                lhs = std::move(n); going = true; break;                 \
+            }                                                            \
+        }                                                                \
+    }                                                                    \
+    return lhs;                                                          \
+}
+
+BINARY_LEVEL(parseOr,         parseAnd,       TK::KwOr, TK::PipePipe)
+BINARY_LEVEL(parseAnd,        parseEquality,  TK::KwAnd, TK::AmpAmp)
+BINARY_LEVEL(parseEquality,   parseRelational,TK::EqEq, TK::BangEq)
+BINARY_LEVEL(parseRelational, parseBitOr,     TK::Lt, TK::Gt, TK::LtEq, TK::GtEq,
+                                               TK::KwIn, TK::KwIs)
+BINARY_LEVEL(parseBitOr,      parseBitXor,    TK::Pipe)
+BINARY_LEVEL(parseBitXor,     parseBitAnd,    TK::Caret)
+BINARY_LEVEL(parseBitAnd,     parseShift,     TK::Amp)
+BINARY_LEVEL(parseShift,      parseAddSub,    TK::LtLt, TK::GtGt)
+BINARY_LEVEL(parseAddSub,     parseMulDiv,    TK::Plus, TK::Minus)
+BINARY_LEVEL(parseMulDiv,     parsePower,     TK::Star, TK::Slash, TK::Percent, TK::SlashSlash)
+
+ExprPtr Parser::parsePower() {
+    auto lhs = parseUnary();
+    if (check(TK::StarStar)) {
+        std::string op = advance().value;
+        auto rhs = parsePower(); // right-assoc
+        auto n = std::make_unique<BinaryExpr>();
+        n->line = lhs->line; n->op = op;
+        n->left = std::move(lhs); n->right = std::move(rhs);
+        return n;
+    }
+    return lhs;
+}
+
+ExprPtr Parser::parseUnary() {
+    if (check(TK::Minus)||check(TK::Bang)||check(TK::KwNot)||check(TK::Tilde)) {
+        auto n = std::make_unique<UnaryExpr>();
+        n->line = peek().line;
+        n->op = advance().value;
+        n->operand = parseUnary();
+        return n;
+    }
+    if (check(TK::KwNot)) {
+        auto n = std::make_unique<UnaryExpr>();
+        n->line = peek().line; n->op = "not"; advance();
+        n->operand = parseUnary(); return n;
+    }
+    if (check(TK::KwMove)) {
+        advance();
+        auto n = std::make_unique<MoveExpr>();
+        n->line = peek().line;
+        n->operand = parseUnary();
+        return n;
+    }
+    return parsePostfix();
+}
+
+ExprPtr Parser::parsePostfix() {
+    auto expr = parsePrimary();
+    while (true) {
+        if (check(TK::Dot)) {
+            advance();
+            auto n = std::make_unique<MemberExpr>();
+            n->line = expr->line;
+            n->object = std::move(expr);
+            n->field = advance().value;
+            if (check(TK::LParen)) {
+                // method call → CallExpr(MemberExpr)
+                auto call = std::make_unique<CallExpr>();
+                call->line = n->line;
+                // wrap member into callee
+                call->callee = std::move(n);
+                advance(); // (
+                call->args = parseArgList();
+                expr = std::move(call);
+            } else {
+                expr = std::move(n);
+            }
+        } else if (check(TK::LParen)) {
+            advance();
+            auto call = std::make_unique<CallExpr>();
+            call->line = expr->line;
+            call->callee = std::move(expr);
+            call->args = parseArgList();
+            expr = std::move(call);
+        } else if (check(TK::LBracket)) {
+            advance();
+            auto idx = std::make_unique<IndexExpr>();
+            idx->line = expr->line;
+            idx->object = std::move(expr);
+            idx->index = parseExpr();
+            if (check(TK::Comma)) { advance(); idx->index2 = parseExpr(); }
+            expect(TK::RBracket, "expected ']'");
+            expr = std::move(idx);
+        } else if (check(TK::KwAs)) {
+            advance();
+            auto n = std::make_unique<BinaryExpr>();
+            n->line = expr->line; n->op = "as";
+            n->left = std::move(expr);
+            // type as rhs: store name in a string literal
+            auto tr = parseTypeRef();
+            auto tname = std::make_unique<StringLit>();
+            tname->value = tr.name + (tr.is_array ? "[]" : "");
+            n->right = std::move(tname);
+            expr = std::move(n);
+        } else if (check(TK::PlusPlus)||check(TK::MinusMinus)) {
+            auto n = std::make_unique<UnaryExpr>();
+            n->line = expr->line; n->op = advance().value; n->prefix = false;
+            n->operand = std::move(expr);
+            expr = std::move(n);
+        } else {
+            break;
+        }
+    }
+    return expr;
+}
+
+ExprList Parser::parseArgList() {
+    ExprList args;
+    while (!check(TK::RParen) && !check(TK::Eof)) {
+        args.push_back(parseExpr());
+        if (!match(TK::Comma)) break;
+    }
+    expect(TK::RParen, "expected ')'");
+    return args;
+}
+
+ExprPtr Parser::parseLambda() {
+    // |params| -> expr  or  [caps] |params| -> expr  or  |params| { stmts }
+    auto n = std::make_unique<LambdaExpr>();
+    n->line = peek().line;
+
+    // capture list: [copy x, ref y]
+    if (check(TK::LBracket)) {
+        advance();
+        while (!check(TK::RBracket) && !check(TK::Eof)) {
+            CaptureSpec cs;
+            cs.mode = advance().value; // copy / ref
+            cs.var  = advance().value;
+            n->captures.push_back(cs);
+            if (!match(TK::Comma)) break;
+        }
+        expect(TK::RBracket, "expected ']'");
+    }
+
+    expect(TK::Lambda, "expected '|'");
+    while (!check(TK::Lambda) && !check(TK::Eof)) {
+        LambdaParam lp;
+        // optional type before name: type is keyword (KwInt etc.) or Ident followed by Ident
+        TK t0 = peek().kind;
+        bool isTypeKw = (t0 >= TK::KwInt && t0 <= TK::KwDim);
+        bool isTypeIdent = (t0 == TK::Ident && peek(1).kind == TK::Ident);
+        if (isTypeKw || isTypeIdent) {
+            lp.type = advance().value;
+            lp.name = advance().value;
+        } else {
+            lp.name = advance().value;
+        }
+        n->params.push_back(lp);
+        if (!match(TK::Comma)) break;
+    }
+    expect(TK::Lambda, "expected '|'");
+
+    if (check(TK::Arrow)) {
+        advance();
+        n->body_expr = parseExpr();
+    } else if (check(TK::LBrace)) {
+        n->body_stmts = parseBlock();
+    }
+    return n;
+}
+
+ExprPtr Parser::parsePrimary() {
+    int line = peek().line, col = peek().col;
+    TK k = peek().kind;
+
+    // lambda shorthand: |x| -> ...
+    if (k == TK::Lambda || (k == TK::LBracket && /* capture list */true)) {
+        if (k == TK::Lambda) return parseLambda();
+        // check if it's capture list (not array)
+        // heuristic: [copy/ref ident, ...]
+        if (k == TK::LBracket && pos_+1 < toks_.size() &&
+            (toks_[pos_+1].value == "copy" || toks_[pos_+1].value == "ref")) {
+            return parseLambda();
+        }
+    }
+
+    if (k == TK::LitInt)    { auto n=std::make_unique<IntLit>(); n->line=line; n->value=std::stol(advance().value); return n; }
+    if (k == TK::LitLong)   { auto n=std::make_unique<LongLit>(); n->line=line; std::string v=advance().value; v.pop_back(); n->value=std::stoll(v); return n; }
+    if (k == TK::LitDouble) { auto n=std::make_unique<DoubleLit>(); n->line=line; n->value=std::stod(advance().value); return n; }
+    if (k == TK::LitFloat)  { auto n=std::make_unique<FloatLit>(); n->line=line; n->value=std::stof(advance().value); return n; }
+    if (k == TK::LitString) { auto n=std::make_unique<StringLit>(); n->line=line; n->value=advance().value; return n; }
+    if (k == TK::LitChar)   { auto n=std::make_unique<CharLit>();  n->line=line; n->value=advance().value[0]; return n; }
+    if (k == TK::KwTrue)    { advance(); auto n=std::make_unique<BoolLit>(); n->line=line; n->value=true; return n; }
+    if (k == TK::KwFalse)   { advance(); auto n=std::make_unique<BoolLit>(); n->line=line; n->value=false; return n; }
+    if (k == TK::KwNull||k==TK::KwNone) { advance(); return std::make_unique<NullLit>(); }
+    if (k == TK::KwNone)    { advance(); return std::make_unique<NoneLit>(); }
+
+    if (k == TK::KwSome) {
+        advance(); expect(TK::LParen,"expected '('");
+        auto v = parseExpr(); expect(TK::RParen,"expected ')'");
+        auto n = std::make_unique<SomeExpr>(); n->line=line; n->value=std::move(v); return n;
+    }
+    if (k == TK::KwOk) {
+        advance(); expect(TK::LParen,"expected '('");
+        auto v = parseExpr(); expect(TK::RParen,"expected ')'");
+        auto n = std::make_unique<OkExpr>(); n->line=line; n->value=std::move(v); return n;
+    }
+    if (k == TK::KwErr) {
+        advance(); expect(TK::LParen,"expected '('");
+        auto v = parseExpr(); expect(TK::RParen,"expected ')'");
+        auto n = std::make_unique<ErrExpr>(); n->line=line; n->value=std::move(v); return n;
+    }
+
+    if (k == TK::KwNew) {
+        advance();
+        auto n = std::make_unique<NewExpr>(); n->line=line;
+        n->type_name = advance().value;
+        if (check(TK::LBracket)) {
+            advance(); n->array_size = parseExpr(); expect(TK::RBracket,"expected ']'");
+        } else if (check(TK::LParen)) {
+            advance(); n->ctor_args = parseArgList();
+        }
+        return n;
+    }
+
+    // array literal: [1, 2, 3]
+    if (k == TK::LBracket) {
+        advance();
+        // build as a call to __array_init
+        auto call = std::make_unique<CallExpr>(); call->line=line;
+        auto callee = std::make_unique<IdentExpr>(); callee->name = "__array_init";
+        call->callee = std::move(callee);
+        while (!check(TK::RBracket) && !check(TK::Eof)) {
+            call->args.push_back(parseExpr());
+            if (!match(TK::Comma)) break;
+        }
+        expect(TK::RBracket,"expected ']'");
+        return call;
+    }
+
+    // map literal: {"a": 1, "b": 2}  or  {}
+    if (k == TK::LBrace) {
+        advance();
+        auto call = std::make_unique<CallExpr>(); call->line=line;
+        auto callee = std::make_unique<IdentExpr>(); callee->name = "__map_init";
+        call->callee = std::move(callee);
+        while (!check(TK::RBrace) && !check(TK::Eof)) {
+            call->args.push_back(parseExpr());
+            expect(TK::Colon,"expected ':'");
+            call->args.push_back(parseExpr());
+            if (!match(TK::Comma)) break;
+        }
+        expect(TK::RBrace,"expected '}'");
+        return call;
+    }
+
+    // grouped expr: (expr)
+    if (k == TK::LParen) {
+        advance();
+        auto e = parseExpr();
+        expect(TK::RParen,"expected ')'");
+        return e;
+    }
+
+    // identifier
+    if (k == TK::Ident || (k >= TK::KwInt && k <= TK::KwDimKw)) {
+        auto n = std::make_unique<IdentExpr>(); n->line=line; n->name=advance().value; return n;
+    }
+
+    error("unexpected token '" + peek().value + "'");
+    advance();
+    auto dummy = std::make_unique<IntLit>(); dummy->value = 0; return dummy;
+}
+
+} // namespace drv
