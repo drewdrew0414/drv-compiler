@@ -563,6 +563,18 @@ void Codegen::emitStmt(const Stmt& s) {
         writeil(emitExpr(*p->expr) + ";");
         return;
     }
+    if (auto p = dynamic_cast<const ExistsStmt*>(&s)) {
+        // exists(var) { } else { } — checks if var is non-empty/non-null
+        // For strings/collections: !empty(), for pointers: != nullptr, for primitives: always true
+        writei("if (!(" + p->var + ").empty()) ");
+        emitBlock(p->then_body);
+        if (!p->else_body.empty()) {
+            writei("else ");
+            emitBlock(p->else_body);
+        }
+        writeln();
+        return;
+    }
 }
 
 void Codegen::emitVarDecl(const VarDecl& s) {
@@ -600,11 +612,27 @@ void Codegen::emitFuncDecl(const FuncDecl& s) {
     bool is_bench = std::find(s.annotations.begin(), s.annotations.end(), "@bench") != s.annotations.end();
     bool is_trace = std::find(s.annotations.begin(), s.annotations.end(), "@trace") != s.annotations.end();
     bool is_compile_eval = std::find(s.modifiers.begin(), s.modifiers.end(), "compile_eval") != s.modifiers.end();
+    bool is_override     = std::find(s.modifiers.begin(), s.modifiers.end(), "override") != s.modifiers.end();
+    bool is_abstract_fn  = std::find(s.modifiers.begin(), s.modifiers.end(), "abstract") != s.modifiers.end();
 
     std::string ret = mapType(s.ret_type);
     if (s.is_async) ret = "std::future<" + ret + ">";
 
-    std::string sig = (is_compile_eval ? "constexpr " : "") + ret + " " + s.name;
+    std::string prefix;
+    if (is_compile_eval) prefix = "constexpr ";
+    if (is_abstract_fn && s.body.empty()) {
+        // emit as pure virtual declaration only
+        std::string sig = "virtual " + ret + " " + s.name + "(";
+        for (size_t i=0; i<s.params.size(); ++i) {
+            if (i) sig += ", ";
+            sig += mapType(s.params[i].type) + " " + s.params[i].name;
+        }
+        sig += ") = 0;";
+        writeil(sig);
+        return;
+    }
+
+    std::string sig = prefix + ret + " " + s.name;
     if (!s.type_params.empty()) {
         sig = "template<";
         for (size_t i=0; i<s.type_params.size(); ++i) {
@@ -620,6 +648,7 @@ void Codegen::emitFuncDecl(const FuncDecl& s) {
         if (s.params[i].default_val) sig += " = " + emitExpr(*s.params[i].default_val);
     }
     sig += ")";
+    if (is_override) sig += " override";
 
     if (s.is_async) {
         // async fn → return std::async(launch::async, [=]() -> RetType { body })

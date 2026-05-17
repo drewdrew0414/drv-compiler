@@ -154,6 +154,11 @@ Program Parser::parse() {
 }
 
 StmtPtr Parser::parseTopLevel() {
+    // @region must be detected before parseAnnotations() consumes @region token
+    if (check(TK::At) && peek().value == "@region") {
+        advance();
+        return parseRegionStmt();
+    }
     auto annots = parseAnnotations();
 
     // module / use
@@ -258,12 +263,8 @@ StmtPtr Parser::parseClassDecl(std::vector<std::string> mods) {
     expect(TK::LBrace, "expected '{'");
     while (!check(TK::RBrace) && !check(TK::Eof)) {
         auto annots = parseAnnotations();
-        std::vector<std::string> fmods;
-        while (check(TK::KwPublic)||check(TK::KwPrivate)||check(TK::KwStatic)||
-               check(TK::KwAbstract)||check(TK::KwFinal)) {
-            fmods.push_back(advance().value);
-        }
-        // function or field
+        // Don't collect modifiers here — let parseStmt() handle them
+        // so they end up in FuncDecl::modifiers / VarDecl properly
         auto stmt = parseStmt();
         stmt->annotations = annots;
         // classify: FuncDecl → method, VarDecl → field (we store all as methods)
@@ -331,6 +332,13 @@ StmtPtr Parser::parseFuncDecl(std::vector<std::string> mods, bool is_async) {
 // ── statements ───────────────────────────────────────────────────────────────
 StmtPtr Parser::parseStmt() {
     skipSemi();
+
+    // @region name { ... } — must check BEFORE parseAnnotations() consumes @region
+    if (check(TK::At) && peek().value == "@region") {
+        advance(); // consume @region
+        return parseRegionStmt();
+    }
+
     auto annots = parseAnnotations();
 
     TK k = peek().kind;
@@ -355,10 +363,7 @@ StmtPtr Parser::parseStmt() {
     if (k == TK::KwSpawn)     { auto s = parseSpawnStmt();    s->annotations = annots; return s; }
     if (k == TK::KwStaticIf)  { auto s = parseStaticIfStmt(); s->annotations = annots; return s; }
     if (k == TK::KwExists)    { auto s = parseExistsStmt();   s->annotations = annots; return s; }
-    if (k == TK::At && peek().value.size() > 1 && peek().value.substr(1) == "region") {
-        advance();
-        return parseRegionStmt();
-    }
+    // @region handled above before parseAnnotations()
 
     if (k == TK::KwReturn) {
         advance();
@@ -405,7 +410,7 @@ StmtPtr Parser::parseStmt() {
         TK mk = peek().kind;
         if (mk==TK::KwPublic||mk==TK::KwPrivate||mk==TK::KwStatic||
             mk==TK::KwConst||mk==TK::KwUnsigned||mk==TK::KwMut||
-            mk==TK::KwAbstract||mk==TK::KwFinal) {
+            mk==TK::KwAbstract||mk==TK::KwFinal||mk==TK::KwOverride) {
             mods.push_back(advance().value);
         } else break;
     }
