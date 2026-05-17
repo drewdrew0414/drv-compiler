@@ -211,6 +211,9 @@ std::string Codegen::mapBuiltinNamespace(const std::string& ns, const std::strin
         if (fn=="sinh")     return "std::sinh(" + a(0) + ")";
         if (fn=="cosh")     return "std::cosh(" + a(0) + ")";
         if (fn=="tanh")     return "std::tanh(" + a(0) + ")";
+        if (fn=="fma")      return "std::fma(" + a(0) + ", " + a(1) + ", " + a(2) + ")";
+        if (fn=="abs")      return "std::abs(" + a(0) + ")";
+        if (fn=="cbrt")     return "std::cbrt(" + a(0) + ")";
     }
     // io.*
     if (ns=="io") {
@@ -549,11 +552,12 @@ void Codegen::emitFuncDecl(const FuncDecl& s) {
     // build signature
     bool is_bench = std::find(s.annotations.begin(), s.annotations.end(), "@bench") != s.annotations.end();
     bool is_trace = std::find(s.annotations.begin(), s.annotations.end(), "@trace") != s.annotations.end();
+    bool is_compile_eval = std::find(s.modifiers.begin(), s.modifiers.end(), "compile_eval") != s.modifiers.end();
 
     std::string ret = mapType(s.ret_type);
     if (s.is_async) ret = "std::future<" + ret + ">";
 
-    std::string sig = ret + " " + s.name;
+    std::string sig = (is_compile_eval ? "constexpr " : "") + ret + " " + s.name;
     if (!s.type_params.empty()) {
         sig = "template<";
         for (size_t i=0; i<s.type_params.size(); ++i) {
@@ -597,13 +601,18 @@ void Codegen::emitFuncDecl(const FuncDecl& s) {
     ++indent_;
 
     if (is_bench) {
-        writeil("auto __drv_bench_start__ = __drv_perf_now();");
-        writeil("auto __drv_bench_guard__ = [&]() { "
-                "fprintf(stderr, \"[bench] " + s.name + ": %.3f ms\\n\", "
-                "__drv_perf_now() - __drv_bench_start__); }();");
+        writeil("double __drv_bench_start__ = __drv_perf_now();");
+        writeil("struct __DrvBenchGuard__ {");
+        writeil("    double start; const char* name;");
+        writeil("    ~__DrvBenchGuard__() { fprintf(stderr, \"[bench] %s: %.3f ms\\n\", name, __drv_perf_now() - start); }");
+        writeil("} __drv_bench_guard__ = { __drv_bench_start__, \"" + s.name + "\" };");
     }
 
+    bool prev_tracing = tracing_;
+    std::string prev_func = tracing_func_;
+    if (is_trace) { tracing_ = true; tracing_func_ = s.name; }
     for (auto& stmt : s.body) emitStmt(*stmt);
+    tracing_ = prev_tracing; tracing_func_ = prev_func;
     --indent_;
     writeil("}");
     writeln();
@@ -612,10 +621,20 @@ void Codegen::emitFuncDecl(const FuncDecl& s) {
 void Codegen::emitClassDecl(const ClassDecl& s) {
     bool is_packed = std::find(s.annotations.begin(),s.annotations.end(),"@packed")!=s.annotations.end();
 
+    // @align(N) → alignas(N)
+    std::string align_attr;
+    for (auto& a : s.annotations) {
+        if (a.size() > 7 && a.substr(0,7) == "@align(") {
+            std::string n = a.substr(7, a.size()-8); // strip @align( and )
+            align_attr = "alignas(" + n + ") ";
+            break;
+        }
+    }
+
     if (is_packed) writeil("#pragma pack(push, 1)");
 
     // Build base list: explicit extends + trait bases from impl blocks
-    std::string decl = "struct " + s.name;
+    std::string decl = align_attr + "struct " + s.name;
     std::vector<std::string> bases;
     if (!s.base.empty()) bases.push_back("public " + s.base);
     auto it = impls_by_class_.find(s.name);
@@ -722,7 +741,20 @@ void Codegen::emitExternDecl(const ExternDecl& s) {
     }
     if (s.unsafe_legacy) writeil("  // @unsafe_legacy: signal handlers auto-injected");
     ++indent_;
-    for (auto& m : s.declarations) emitStmt(*m);
+    for (auto& m : s.declarations) {
+        // In extern block, FuncDecl emits as forward declaration only (no body)
+        if (auto fn = dynamic_cast<const FuncDecl*>(m.get())) {
+            std::string sig = mapType(fn->ret_type) + " " + fn->name + "(";
+            for (size_t i = 0; i < fn->params.size(); ++i) {
+                if (i) sig += ", ";
+                sig += mapType(fn->params[i].type) + " " + fn->params[i].name;
+            }
+            sig += ");";
+            writeil(sig);
+        } else {
+            emitStmt(*m);
+        }
+    }
     --indent_;
     writeil("}");
     writeln();
@@ -734,11 +766,31 @@ static std::string stripOuterParens(const std::string& s) {
 }
 
 void Codegen::emitIfStmt(const IfStmt& s) {
-    writei("if (" + stripOuterParens(emitExpr(*s.cond)) + ") ");
-    emitBlock(s.then_body);
+    std::string cond_str = stripOuterParens(emitExpr(*s.cond));
+    writei("if (" + cond_str + ") ");
+    if (tracing_) {
+        // inject trace call at start of then-block
+        writeln("{");
+        ++indent_;
+        writeil("__drv_trace_push(\"" + tracing_func_ + "\", \"if:" + cond_str + "\", " + std::to_string(s.line) + ");");
+        for (auto& st : s.then_body) emitStmt(*st);
+        --indent_;
+        writeil("}");
+    } else {
+        emitBlock(s.then_body);
+    }
     if (!s.else_body.empty()) {
         writei("else ");
-        emitBlock(s.else_body);
+        if (tracing_) {
+            writeln("{");
+            ++indent_;
+            writeil("__drv_trace_push(\"" + tracing_func_ + "\", \"else\", " + std::to_string(s.line) + ");");
+            for (auto& st : s.else_body) emitStmt(*st);
+            --indent_;
+            writeil("}");
+        } else {
+            emitBlock(s.else_body);
+        }
     }
     writeln();
 }
@@ -1024,11 +1076,16 @@ std::string Codegen::emit(const Program& prog) {
 
     // ── drv runtime helpers ───────────────────────────────────────────────────
     writeln("// ── drv runtime ──────────────────────────────────────────────────");
-    writeln("template<typename... Args>");
-    writeln("static void __drv_print(Args&&... args) {");
-    writeln("    bool first = true;");
-    writeln("    ((std::cout << (first ? (first=false,\"\") : \" \") << args), ...);");
-    writeln("    std::cout << '\\n';");
+    writeln("template<typename T> static std::string __drv_to_str(const T& v) {");
+    writeln("    if constexpr (std::is_same_v<T,bool>) return v ? \"true\" : \"false\";");
+    writeln("    else { std::ostringstream os; os << v; return os.str(); }");
+    writeln("}");
+    writeln("static void __drv_print() { std::cout << '\\n'; }");
+    writeln("template<typename A, typename... Rest>");
+    writeln("static void __drv_print(A&& a, Rest&&... rest) {");
+    writeln("    std::cout << __drv_to_str(a);");
+    writeln("    if constexpr (sizeof...(rest) > 0) std::cout << ' ';");
+    writeln("    __drv_print(std::forward<Rest>(rest)...);");
     writeln("}");
     writeln("template<typename T>");
     writeln("static int64_t __drv_length(const std::vector<T>& v) { return (int64_t)v.size(); }");

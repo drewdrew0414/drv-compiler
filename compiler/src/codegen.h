@@ -37,6 +37,9 @@ private:
     std::unordered_map<std::string, std::vector<const ImplDecl*>> impls_by_class_;
     // smart pointer variable tracking: var name → "own" or "ref"
     std::unordered_map<std::string, std::string> smart_ptr_vars_;
+    // @trace state
+    bool tracing_{false};
+    std::string tracing_func_;
 
     // ── emit helpers ──────────────────────────────────────────────────────────
     void write(const std::string& s)  { out_ << s; }

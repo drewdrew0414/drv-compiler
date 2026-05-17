@@ -55,7 +55,18 @@ void Parser::sync() {
 std::vector<std::string> Parser::parseAnnotations() {
     std::vector<std::string> annots;
     while (check(TK::At)) {
-        annots.push_back(advance().value);
+        std::string name = advance().value;  // e.g. "@align"
+        // optional argument list: @align(64)
+        if (check(TK::LParen)) {
+            name += "(";
+            advance();
+            while (!check(TK::RParen) && !check(TK::Eof)) {
+                name += advance().value;
+                if (check(TK::Comma)) { name += ","; advance(); }
+            }
+            if (check(TK::RParen)) { advance(); name += ")"; }
+        }
+        annots.push_back(name);
     }
     return annots;
 }
@@ -151,6 +162,13 @@ StmtPtr Parser::parseTopLevel() {
     if (check(TK::KwExtern)) return parseExternDecl();
     if (check(TK::KwDimKw))  return parseDimDecl();
     if (check(TK::KwStaticIf)) return parseStaticIfStmt();
+    if (check(TK::KwCompileEval)) {
+        advance(); // consume compile_eval
+        std::vector<std::string> ce_mods = {"compile_eval"};
+        auto fn = parseFuncDecl(ce_mods, false);
+        fn->annotations = annots;
+        return fn;
+    }
 
     // collect modifiers
     std::vector<std::string> mods;
