@@ -86,14 +86,42 @@ drv 컴파일러 및 언어 생태계의 개발 방향을 정리합니다.
 
 ## v0.5 — 언어 고급 기능
 
-**목표**: 자동 미분, 고급 최적화 어노테이션 지원
+**목표**: 자동 미분, 고급 최적화 어노테이션, 분기 추적, 툴민 논증 어노테이션 지원
 
 - [ ] `diff.forward` / `diff.numerical` / `diff.hessian` 자동 미분
 - [ ] `@bench` 함수 실행 시간 자동 측정
 - [ ] `@specialize` 타입별 SIMD 특수화
 - [ ] `static_if` 컴파일 타임 조건 분기
-- [ ] `import` 파일 임포트 (순환 임포트 방지)
+- [ ] `module/use` 모듈 시스템 (순환 의존 감지)
 - [ ] `--trace` parallel 루프 시각화 (Chrome DevTools 형식)
+- [ ] `@trace` 분기 추적 인스트루멘테이션 자동 주입
+- [ ] `sys.get_branch_trace()` / `sys.clear_branch_trace()` 런타임 내장 함수
+- [ ] `@warrant`, `@rebuttal`, `@defeats` 툴민 논증 어노테이션 파싱 및 바이너리 메타데이터 포함
+- [ ] `extern "FFI"` 모던 언어 안전 연동 (Rust, Zig → `Own/Ref` 자동 매핑)
+- [ ] `@unsafe_legacy extern "C"` 레거시 방어 계층 (시그널 핸들러 자동 주입)
+
+---
+
+## v0.6 — 외부 라이브러리 생태계
+
+**목표**: drv-pandas, drv-toulmin, drv-data, drv-plot 핵심 4종 라이브러리 구현
+
+- [ ] **drv-pandas** — 데이터프레임 파이프라인
+  - [ ] Apache Arrow / Rust Polars 코어 FFI 래핑
+  - [ ] `.query()`, `.assign()`, `.groupby()`, `.mean()` 메서드 체이닝
+  - [ ] `df.to_tensor()` 텐서 변환
+- [ ] **drv-toulmin** — 논증 룰 엔진 ([참조: park-jun-woo/toulmin](https://github.com/park-jun-woo/toulmin))
+  - [ ] 신뢰도 계산: $Acc(a) = \frac{w(a)}{1 + \sum Acc(attackers)}$
+  - [ ] `toulmin.load_rules()` 바이너리 메타데이터 로드
+  - [ ] `toulmin.build_audit()` 감사 추적 트리 생성
+- [ ] **drv-data** — 멀티 포맷 입출력
+  - [ ] CSV, JSON, XML 고속 직렬화
+  - [ ] DataFrame 테이블 → PNG 이미지 내보내기
+  - [ ] 논증 트리 → PNG 이미지 내보내기
+- [ ] **drv-plot** — 데이터 시각화
+  - [ ] line, bar, scatter, heatmap 차트 엔진
+  - [ ] `plot.dashboard()` 대시보드 구성
+  - [ ] GUI 창(`show()`) 및 HTML/PNG 내보내기
 
 ---
 
