@@ -1,4 +1,5 @@
 #include "parser.h"
+#include "lexer.h"
 #include <stdexcept>
 #include <sstream>
 #include <cassert>
@@ -928,6 +929,53 @@ ExprPtr Parser::parsePrimary() {
     if (k == TK::LitDouble) { auto n=std::make_unique<DoubleLit>(); n->line=line; n->value=std::stod(advance().value); return n; }
     if (k == TK::LitFloat)  { auto n=std::make_unique<FloatLit>(); n->line=line; n->value=std::stof(advance().value); return n; }
     if (k == TK::LitString) { auto n=std::make_unique<StringLit>(); n->line=line; n->value=advance().value; return n; }
+    if (k == TK::LitTemplate) {
+        // Template string: `Hello ${name}!` → std::string("Hello ") + __drv_to_str(name) + "!"
+        std::string raw = advance().value;
+        // Split raw into [text, ${...}, text, ${...}, ...]
+        // Build chain: str + to_str(expr) + str + ...
+        std::vector<ExprPtr> parts;
+        size_t p = 0;
+        while (p <= raw.size()) {
+            size_t start = p;
+            size_t found = raw.find("${", p);
+            // Add the text segment before ${
+            std::string seg = (found == std::string::npos) ? raw.substr(p) : raw.substr(p, found-p);
+            if (!seg.empty()) {
+                auto sl = std::make_unique<StringLit>(); sl->line = line; sl->value = seg;
+                parts.push_back(std::move(sl));
+            }
+            if (found == std::string::npos) break;
+            // Find closing }
+            size_t close = raw.find('}', found+2);
+            if (close == std::string::npos) { p = raw.size()+1; break; }
+            std::string expr_src = raw.substr(found+2, close-(found+2));
+            // Parse expr_src as expression (re-lex + re-parse)
+            Lexer sub_lex(expr_src, file_);
+            auto sub_toks = sub_lex.tokenize();
+            if (!sub_lex.errors().empty()) { p = close+1; continue; }
+            Parser sub_par(std::move(sub_toks), file_);
+            ExprPtr expr_node = sub_par.parseExpr();
+            // Wrap in to_str call
+            auto to_str_call = std::make_unique<CallExpr>(); to_str_call->line = line;
+            auto to_str_id = std::make_unique<IdentExpr>(); to_str_id->name = "__drv_to_str";
+            to_str_call->callee = std::move(to_str_id);
+            to_str_call->args.push_back(std::move(expr_node));
+            parts.push_back(std::move(to_str_call));
+            p = close+1;
+        }
+        if (parts.empty()) {
+            auto n = std::make_unique<StringLit>(); n->line = line; n->value = raw; return n;
+        }
+        // Chain parts with + operator
+        ExprPtr result = std::move(parts[0]);
+        for (size_t i=1; i<parts.size(); ++i) {
+            auto bin = std::make_unique<BinaryExpr>(); bin->line = line;
+            bin->op = "+"; bin->left = std::move(result); bin->right = std::move(parts[i]);
+            result = std::move(bin);
+        }
+        return result;
+    }
     if (k == TK::LitChar)   { auto n=std::make_unique<CharLit>();  n->line=line; n->value=advance().value[0]; return n; }
     if (k == TK::KwTrue)    { advance(); auto n=std::make_unique<BoolLit>(); n->line=line; n->value=true; return n; }
     if (k == TK::KwFalse)   { advance(); auto n=std::make_unique<BoolLit>(); n->line=line; n->value=false; return n; }

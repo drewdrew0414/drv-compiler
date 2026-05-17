@@ -7,7 +7,7 @@ namespace drv {
 
 enum class TK {
     // Literals
-    LitInt, LitLong, LitDouble, LitFloat, LitString, LitChar, LitBool,
+    LitInt, LitLong, LitDouble, LitFloat, LitString, LitChar, LitBool, LitTemplate,
 
     // Identifier
     Ident,

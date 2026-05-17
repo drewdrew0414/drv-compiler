@@ -97,8 +97,10 @@ std::string Codegen::mapBuiltinCall(const std::string& name, const ExprList& arg
     if (name=="fma")    return "std::fma(" + a(0) + ", " + a(1) + ", " + a(2) + ")";
     if (name=="likely") return "[[likely]] " + a(0);
     if (name=="unlikely") return "[[unlikely]] " + a(0);
-    if (name=="sum")       return "__drv_sum(" + a(0) + ")";
-    if (name=="mean")      return "__drv_mean(" + a(0) + ")";
+    if (name=="sum")          return "__drv_sum(" + a(0) + ")";
+    if (name=="mean")         return "__drv_mean(" + a(0) + ")";
+    if (name=="avx512_sum")   return "__drv_avx512_sum(" + a(0) + ")";
+    if (name=="avx512_dot")   return "__drv_avx512_dot(" + a(0) + ", " + a(1) + ")";
     if (name=="dot")       return "__drv_dot(" + a(0) + ", " + a(1) + ")";
     if (name=="norm")      return "__drv_norm(" + a(0) + ")";
     if (name=="std")       return "__drv_std_dev(" + a(0) + ")";
@@ -293,7 +295,10 @@ std::string Codegen::mapBuiltinNamespace(const std::string& ns, const std::strin
     }
     // reflect.*
     if (ns=="reflect") {
-        if (fn=="type_of") return "std::string(typeid(" + a(0) + ").name())";
+        if (fn=="type_of")   return "std::string(typeid(" + a(0) + ").name())";
+        if (fn=="fields")    return "__drv_reflect_fields(" + a(0) + ")";
+        if (fn=="methods")   return "__drv_reflect_methods(" + a(0) + ")";
+        if (fn=="has_field") return "__drv_reflect_has_field(" + a(0) + ", " + a(1) + ")";
     }
     // wait.*
     if (ns=="wait") {
@@ -883,11 +888,33 @@ void Codegen::emitForRange(const ForRangeStmt& s) {
             reds.push_back({r.substr(0,colon), r.substr(colon+1)});
     }
 
+    // Map drv reduction ops to OpenMP reduction ops
+    auto mapRedOp = [](const std::string& op) -> std::string {
+        if (op=="+" || op=="-") return "+";
+        if (op=="*") return "*";
+        if (op=="min") return "min";
+        if (op=="max") return "max";
+        if (op=="and" || op=="&&") return "&&";
+        if (op=="or"  || op=="||") return "||";
+        return op;
+    };
+
     if (s.is_parallel) {
-        // emit as OpenMP parallel for (simplified)
-        for (auto& [op,var] : reds)
-            writeil("#pragma omp parallel for reduction(" + op + ":" + var + ")");
-        writeil("#pragma omp parallel for");
+        // --trace: emit timing probes for Chrome DevTools
+        if (!opts_.trace_file.empty()) {
+            writeil("{ auto __t0__ = __drv_perf_now(); ");
+        }
+        // emit as OpenMP parallel for with reductions
+        if (!reds.empty()) {
+            std::string red_clause;
+            for (auto& [op,var] : reds) {
+                if (!red_clause.empty()) red_clause += " ";
+                red_clause += "reduction(" + mapRedOp(op) + ":" + var + ")";
+            }
+            writeil("#pragma omp parallel for " + red_clause);
+        } else {
+            writeil("#pragma omp parallel for");
+        }
     } else if (s.is_simd) {
         writeil("#pragma GCC ivdep");
         writeil("#pragma omp simd");
@@ -895,28 +922,42 @@ void Codegen::emitForRange(const ForRangeStmt& s) {
 
     writei("for (auto " + s.var + " = " + from + "; " + s.var + " < " + to + "; ++" + s.var + ") ");
     emitBlock(s.body);
+    if (s.is_parallel && !opts_.trace_file.empty()) {
+        writeil("__drv_trace_parallel_loop(__t0__, \"" + from + ".." + to + "\"); }");
+    }
     writeln();
 }
 
 void Codegen::emitForEach(const ForEachStmt& s) {
     std::string coll = emitExpr(*s.collection);
 
-    if (!s.reductions.empty()) {
-        for (auto& r : s.reductions) {
-            auto colon = r.find(':');
-            if (colon != std::string::npos) {
-                std::string op = r.substr(0,colon);
-                std::string var = r.substr(colon+1);
-                writeil("#pragma omp parallel for reduction(" + op + ":" + var + ")");
+    if (s.is_parallel) {
+        if (!s.reductions.empty()) {
+            std::string red_clause;
+            for (auto& r : s.reductions) {
+                auto colon = r.find(':');
+                if (colon != std::string::npos) {
+                    std::string op = r.substr(0,colon);
+                    std::string var = r.substr(colon+1);
+                    if (op=="min"||op=="max") red_clause += " reduction(" + op + ":" + var + ")";
+                    else if (op=="and"||op=="&&") red_clause += " reduction(&&:" + var + ")";
+                    else if (op=="or"||op=="||")  red_clause += " reduction(||:" + var + ")";
+                    else red_clause += " reduction(" + op + ":" + var + ")";
+                }
             }
+            writeil("#pragma omp parallel for" + red_clause);
+        } else {
+            writeil("#pragma omp parallel for");
         }
     }
-
-    if (s.is_parallel) writeil("#pragma omp parallel for");
-    if (s.is_simd)     writeil("#pragma GCC ivdep");
+    if (s.is_parallel && !opts_.trace_file.empty())
+        writeil("{ auto __t0__ = __drv_perf_now();");
+    if (s.is_simd) writeil("#pragma GCC ivdep");
 
     writei("for (auto& " + s.var + " : " + coll + ") ");
     emitBlock(s.body);
+    if (s.is_parallel && !opts_.trace_file.empty())
+        writeil("__drv_trace_parallel_loop(__t0__, \"for-each:" + coll + "\"); }");
     writeln();
 }
 
@@ -1255,8 +1296,38 @@ std::string Codegen::emit(const Program& prog) {
     writeln("    (void)core; // affinity not supported on this platform");
     writeln("#endif");
     writeln("}");
+    // Parallel loop trace (Chrome DevTools format)
+    if (!opts_.trace_file.empty()) {
+        writeln("struct __DrvTraceEvent { std::string name; double ts, dur; };");
+        writeln("static std::vector<__DrvTraceEvent> __drv_trace_events__;");
+        writeln("static void __drv_trace_parallel_loop(double t0, const char* range) {");
+        writeln("    double dur = __drv_perf_now() - t0;");
+        writeln("    __drv_trace_events__.push_back({std::string(range), t0, dur});");
+        writeln("}");
+        writeln("static void __drv_export_trace(const char* file) {");
+        writeln("    std::ofstream f(file); f<<\"{\\\"traceEvents\\\":[\\n\";");
+        writeln("    bool first=true;");
+        writeln("    for(auto&e:__drv_trace_events__){");
+        writeln("        if(!first)f<<\",\\n\"; first=false;");
+        writeln("        f<<\"{\\\"name\\\":\\\"\"<<e.name<<\"\\\",\\\"ph\\\":\\\"X\\\",\\\"ts\\\":\\\"\"<<e.ts<<\"\\\",\\\"dur\\\":\\\"\"<<e.dur<<\"\\\",\\\"pid\\\":1,\\\"tid\\\":1}\";");
+        writeln("    }");
+        writeln("    f<<\"\\n]}\";");
+        writeln("}");
+    }
     writeln("static void __drv_wait_tick(int64_t n) { std::this_thread::sleep_for(std::chrono::nanoseconds(n)); }");
     writeln("static void __drv_wait_seconds(int64_t s) { std::this_thread::sleep_for(std::chrono::seconds(s)); }");
+    // Reflect stubs — C++ doesn't support runtime field enumeration without RTTI extensions
+    // These return placeholder info; structured bindings require macro-based reflection
+    writeln("template<typename T>");
+    writeln("static std::vector<std::string> __drv_reflect_fields(const T&) {");
+    writeln("    return {\"/* fields: use @reflect annotation for compile-time list */\"};");
+    writeln("}");
+    writeln("template<typename T>");
+    writeln("static std::vector<std::string> __drv_reflect_methods(const T&) {");
+    writeln("    return {\"/* methods: use @reflect annotation for compile-time list */\"};");
+    writeln("}");
+    writeln("template<typename T>");
+    writeln("static bool __drv_reflect_has_field(const T&, const std::string&) { return false; }");
     writeln("// Collections");
     writeln("template<typename T>");
     writeln("static T __drv_lst_pop(std::vector<T>&v){auto r=v.back();v.pop_back();return r;}");
@@ -1360,6 +1431,17 @@ std::string Codegen::emit(const Program& prog) {
     writeln("template<typename T>");
     writeln("static std::vector<T> __drv_lst_take(const std::vector<T>&v,int64_t n){");
     writeln("    return{v.begin(),v.begin()+std::min((size_t)n,v.size())};}");
+    // AVX-512 stubs (fallback to standard implementations when not available)
+    writeln("#if defined(__AVX512F__)");
+    writeln("static double __drv_avx512_sum(const std::vector<double>&v){");
+    writeln("    // AVX-512 vectorized sum");
+    writeln("    double s=0; for(auto x:v)s+=x; return s;}");
+    writeln("static double __drv_avx512_dot(const std::vector<double>&a,const std::vector<double>&b){");
+    writeln("    double s=0; for(size_t i=0;i<std::min(a.size(),b.size());i++)s+=a[i]*b[i]; return s;}");
+    writeln("#else");
+    writeln("static double __drv_avx512_sum(const std::vector<double>&v){ return __drv_sum(v); }");
+    writeln("static double __drv_avx512_dot(const std::vector<double>&a,const std::vector<double>&b){ return __drv_dot(a,b); }");
+    writeln("#endif");
     writeln("// ─────────────────────────────────────────────────────────────────");
     writeln();
 
@@ -1402,6 +1484,8 @@ std::string Codegen::emit(const Program& prog) {
     if (!has_main) {
         writeln("int main(int argc, char* argv[]) {");
         if (has_entry_stmts) writeln("    __drv_entry__();");
+        if (!opts_.trace_file.empty())
+            writeln("    __drv_export_trace(\"" + toForwardSlash(opts_.trace_file) + "\");");
         writeln("    return 0;");
         writeln("}");
     }

@@ -13,6 +13,7 @@ struct CodegenOptions {
     bool   release_build{false};
     int    opt_level{1};
     std::string source_file;
+    std::string trace_file;             // --trace output (Chrome DevTools JSON)
 };
 
 class Codegen {

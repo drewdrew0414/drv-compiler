@@ -99,6 +99,34 @@ CompileResult Compiler::compile() {
             return result;
         }
 
+        // 3b. Module resolution: load referenced .drv files
+        {
+            namespace fs = std::filesystem;
+            fs::path input_dir = fs::path(opts_.input_file).parent_path();
+            std::vector<std::string> include_dirs = { input_dir.string(), "." };
+            for (auto& s : program.stmts) {
+                auto* ud = dynamic_cast<const UseDecl*>(s.get());
+                if (!ud) continue;
+                for (auto& dir : include_dirs) {
+                    fs::path mod_path = fs::path(dir) / (ud->module + ".drv");
+                    if (!fs::exists(mod_path)) continue;
+                    std::ifstream mf(mod_path);
+                    if (!mf) continue;
+                    std::string msrc{std::istreambuf_iterator<char>(mf), {}};
+                    Lexer ml(msrc, mod_path.string());
+                    auto mtoks = ml.tokenize();
+                    if (ml.hasErrors()) break;
+                    Parser mp(std::move(mtoks), mod_path.string());
+                    auto mprog = mp.parse();
+                    if (mp.hasErrors()) break;
+                    // Inject module declarations before current program
+                    for (auto& ms : mprog.stmts)
+                        program.stmts.insert(program.stmts.begin(), std::move(const_cast<StmtPtr&>(ms)));
+                    break;
+                }
+            }
+        }
+
         if (opts_.check_only) {
             result.success = true;
             return result;
@@ -111,6 +139,7 @@ CompileResult Compiler::compile() {
         cg_opts.release_build = opts_.release;
         cg_opts.opt_level = opts_.opt_level;
         cg_opts.emit_line_directives = true;
+        cg_opts.trace_file = opts_.trace_file;
 
         Codegen cg(cg_opts);
         result.cpp_source = cg.emit(program);

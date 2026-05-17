@@ -205,7 +205,7 @@ Token Lexer::lexTemplateString() {
     }
     if (pos_ >= src_.size()) error("unterminated template string");
     else advance(); // closing `
-    return Token{TK::LitString, val, startLine, startCol}; // treated as string for now
+    return Token{TK::LitTemplate, val, startLine, startCol};
 }
 
 Token Lexer::lexIdentOrKeyword() {

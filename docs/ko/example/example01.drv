@@ -1,0 +1,114 @@
+module matmul;
+
+int N = 512;
+
+# 정렬된 2D 배열 (평탄화)
+@align(64)
+class Matrix {
+    int rows;
+    int cols;
+    double[] data;
+
+    void init(int r, int c) {
+        rows = r;
+        cols = c;
+        data = lst.fill(r * c, 0.0);
+    }
+
+    double get(int r, int c) {
+        return data[r * cols + c];
+    }
+
+    void set(int r, int c, double v) {
+        data[r * cols + c] = v;
+    }
+}
+
+# 무작위 행렬 초기화 (시드 기반)
+void fill_sequential(Matrix m, int offset) {
+    for (i in 0..m.rows) {
+        for (j in 0..m.cols) {
+            m.set(i, j, (i * m.cols + j + offset) * 0.001);
+        }
+    }
+}
+
+# 순수 C 스타일 행렬 곱 (기준선)
+void matmul_naive(Matrix a, Matrix b, Matrix c) {
+    int N = 512;
+    for (i in 0..N) {
+        for (j in 0..N) {
+            double s = 0.0;
+            for (k in 0..N) {
+                s += a.get(i, k) * b.get(k, j);
+            }
+            c.set(i, j, s);
+        }
+    }
+}
+
+# SIMD + 병렬 최적화 행렬 곱
+@bench
+void matmul_simd_parallel(Matrix a, Matrix b, Matrix c) {
+    int N = 512;
+    parallel for (i in 0..N) {
+        for (k in 0..N) {
+            double aik = a.get(i, k);
+            where (aik != 0.0) {
+                simd for (j in 0..N) {
+                    double old_val = c.get(i, j);
+                    c.set(i, j, old_val + aik * b.get(k, j));
+                }
+            } otherwise {
+                # 0 곱셈은 행 전체를 skip
+            }
+        }
+    }
+}
+
+# 결과 검증
+boolean verify(Matrix c_ref, Matrix c_opt, double tol) {
+    for (i in 0..10) {
+        for (j in 0..10) {
+            double diff = c_ref.get(i, j) - c_opt.get(i, j);
+            if (diff < 0.0) { diff = -diff; }
+            if (diff > tol) {
+                print("불일치 발견:", i, j, c_ref.get(i, j), c_opt.get(i, j));
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+Matrix a;  a.init(N, N);
+Matrix b;  b.init(N, N);
+Matrix c1; c1.init(N, N);
+Matrix c2; c2.init(N, N);
+
+fill_sequential(a, 0);
+fill_sequential(b, 100);
+
+# 기준선 측정
+double t0 = perf.now();
+matmul_naive(a, b, c1);
+double naive_ms = perf.now() - t0;
+print(`naive:  ${naive_ms} ms`);
+
+# SIMD+병렬 측정
+double t1 = perf.now();
+matmul_simd_parallel(a, b, c2);
+double opt_ms = perf.now() - t1;
+print(`matmul_simd_parallel: ${opt_ms} ms`);
+
+# 검증
+boolean ok = verify(c1, c2, 1e-9);
+print(`검증: ${ok}`);
+
+# GFLOP/s 계산
+double ops = 2.0 * N * N * N;
+double naive_gflops = ops / (naive_ms * 1e6);
+double opt_gflops = ops / (opt_ms * 1e6);
+
+print(`naive GFLOP/s: ${naive_gflops}`);
+print(`이론 GFLOP/s: ${opt_gflops}`);
