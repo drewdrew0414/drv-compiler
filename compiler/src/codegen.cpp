@@ -4,7 +4,6 @@
 #include <sstream>
 #include <iomanip>
 #include <stdexcept>
-#include <windows.h>
 
 namespace drv {
 
@@ -1238,6 +1237,7 @@ std::string Codegen::emit(const Program& prog) {
     writeln("#include <cstdlib>");
     writeln("#include <cassert>");
     writeln("#include <atomic>");
+    writeln("#include <windows.h>");
     writeln("#ifndef M_PI");
     writeln("#define M_PI 3.14159265358979323846");
     writeln("#endif");
