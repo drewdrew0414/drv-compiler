@@ -1,6 +1,14 @@
 ﻿# dri Language
 
-> **Learn like Python. Scale like C++.**
+> **Learn like Python. Scale like C++.**  
+> How to install on CMD?
+> https://github.com/drewdrew0414/dri-lang/releases/download/0.1.0/dri-install.exe
+---
+
+## Powershell에서 실행할 경우 명령어는 아래와 같이 수정되어야합니다.
+```
+& dri "코드 파일 위치" --exe "실행 exe가 만들어질 자리"
+```
 
 ---
 
