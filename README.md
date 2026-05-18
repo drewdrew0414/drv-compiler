@@ -1,7 +1,8 @@
 ﻿# dri Language
 
 > **Learn like Python. Scale like C++.**
-
+> How to install on CMD?
+> https://drvpm-registry.cloud/dist/v0.1.0/dri-install.exe
 ---
 
 ## 🌐 Language / 언어 / 言語 / 语言
