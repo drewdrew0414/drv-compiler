@@ -56,6 +56,16 @@ enum class TK {
     KwLazy, KwExtern, KwCompileEval, KwStaticIf,
     KwUnsafeLegacy, KwRef,   // ref (alias variable)
     KwDimKw,                 // dim
+    KwAtomic,                // atomic<T>
+    KwFn,                    // fn (alternate function keyword)
+
+    // ── sys.sync memory barrier builtins ───────────────────────
+    KwFenceFull,      // fence_full()
+    KwFenceAcquire,   // fence_acquire()
+    KwFenceRelease,   // fence_release()
+    KwAtomicLoad,     // atomic_load()
+    KwAtomicStore,    // atomic_store()
+    KwAtomicCAS,      // atomic_cas()
 
     // ── Annotation ─────────────────────────────────────────────
     At,

@@ -91,6 +91,19 @@
           "type": "boolean",
           "default": true,
           "description": "Show type inlay hints"
+        },
+        "dri.shell": {
+          "type": "string",
+          "default": "auto",
+          "enum": ["auto", "powershell", "ps7", "cmd", "bash"],
+          "enumDescriptions": [
+            "Auto-detect from active terminal name",
+            "PowerShell 5.1 (Windows default) — no && operator",
+            "PowerShell 7+ (pwsh) — && supported",
+            "Command Prompt (cmd.exe) — && supported",
+            "Bash / WSL / Git Bash — && supported"
+          ],
+          "description": "Shell used for dri terminal commands. 'auto' detects from active terminal name."
         }
       }
     }

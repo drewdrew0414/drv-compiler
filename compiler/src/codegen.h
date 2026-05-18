@@ -14,6 +14,15 @@ struct CodegenOptions {
     int    opt_level{1};
     std::string source_file;
     std::string trace_file;             // --trace output (Chrome DevTools JSON)
+    std::string source_map_file;        // --source-map JSON output
+    std::string target_triple;          // cross-compilation target
+};
+
+// Source map entry: generated C++ line → original .dri location
+struct SourceMapEntry {
+    int         cpp_line{0};
+    std::string dri_file;
+    int         dri_line{0};
 };
 
 class Codegen {
@@ -41,6 +50,9 @@ private:
     // @trace state
     bool tracing_{false};
     std::string tracing_func_;
+    // source map: cpp line → dri location
+    std::vector<SourceMapEntry> source_map_;
+    int current_cpp_line_{1};
 
     // ── emit helpers ──────────────────────────────────────────────────────────
     void write(const std::string& s)  { out_ << s; }
@@ -52,10 +64,21 @@ private:
         for (auto& c : s) if (c == '\\') c = '/';
         return s;
     }
-    void lineDir(int line) {
+    void lineDir(int dri_line) {
+        if (dri_line <= 0) return;
         if (opts_.emit_line_directives && !opts_.source_file.empty())
-            writeln("#line " + std::to_string(line) + " \"" + toForwardSlash(opts_.source_file) + "\"");
+            writeln("#line " + std::to_string(dri_line) + " \"" + toForwardSlash(opts_.source_file) + "\"");
+        // Track source map entry
+        if (!opts_.source_map_file.empty()) {
+            // Count newlines emitted so far to approximate cpp line
+            auto s = out_.str();
+            int cpp_line = (int)std::count(s.begin(), s.end(), '\n') + 1;
+            source_map_.push_back({cpp_line, opts_.source_file, dri_line});
+        }
     }
+
+    // Write source map JSON file (called from emit() after code generation)
+    void writeSourceMap() const;
 
     // ── type mapping ──────────────────────────────────────────────────────────
     std::string mapType(const TypeRef& tr);

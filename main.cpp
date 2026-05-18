@@ -19,6 +19,13 @@ static void printUsage(const char* prog) {
         << "  --native         Enable -march=native\n"
         << "  --lto            Enable Link-Time Optimization\n"
         << "  --trace <file>   Export parallel loop trace (Chrome DevTools)\n"
+        << "  --incremental    Skip unchanged files (uses .dri_cache/)\n"
+        << "  --cache-dir <d>  Set incremental cache directory\n"
+        << "  --no-analyze     Disable static analysis (thread-safety, aliasing)\n"
+        << "  --target <triple> Cross-compile target (e.g. x86_64-linux-gnu, aarch64-linux-gnu)\n"
+        << "  --sysroot <path> Sysroot for cross-compilation\n"
+        << "  --cross-cxx <cc> Explicit cross compiler binary\n"
+        << "  --source-map <f> Emit source map JSON (cpp_line → dri_line)\n"
         << "  -D<FLAG>         Define compile-time flag for static_if\n"
         << "  --version        Show compiler version\n"
         << "  --help           Show this help\n";
@@ -65,6 +72,20 @@ int main(int argc, char* argv[]) {
             opts.lto = true;
         } else if (arg == "--trace" && i+1 < argc) {
             opts.trace_file = argv[++i];
+        } else if (arg == "--incremental") {
+            opts.incremental = true;
+        } else if (arg == "--cache-dir" && i+1 < argc) {
+            opts.cache_dir = argv[++i];
+        } else if (arg == "--no-analyze") {
+            opts.no_analyze = true;
+        } else if (arg == "--target" && i+1 < argc) {
+            opts.target_triple = argv[++i];
+        } else if (arg == "--sysroot" && i+1 < argc) {
+            opts.sysroot = argv[++i];
+        } else if (arg == "--cross-cxx" && i+1 < argc) {
+            opts.cross_cxx = argv[++i];
+        } else if (arg == "--source-map" && i+1 < argc) {
+            opts.source_map_file = argv[++i];
         } else if (arg.size() > 2 && arg[0]=='-' && arg[1]=='D') {
             opts.defines.push_back(arg.substr(2));
         } else {

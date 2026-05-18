@@ -1,5 +1,6 @@
 #include "codegen.h"
 #include <cassert>
+#include <fstream>
 #include <sstream>
 #include <iomanip>
 #include <stdexcept>
@@ -32,6 +33,7 @@ std::string Codegen::mapBuiltinType(const std::string& name) {
     if (name=="Result")  return "DrvResult";
     if (name=="Self")    return "auto";
     if (name=="arg")     return "std::vector<std::string>";
+    if (name=="atomic")  return "std::atomic";
     return name; // user-defined types pass through
 }
 
@@ -57,6 +59,12 @@ std::string Codegen::mapType(const TypeRef& tr) {
         if (tr.name=="char")    return "std::string"; // char[] → string
         if (tr.name=="String")  return "std::vector<std::string>";
         return "std::vector<" + base + ">";
+    }
+
+    // atomic<String> → __Drv_AtomicStr (wraps std::atomic<char*> + std::string storage)
+    if (tr.name == "atomic" && !tr.args.empty() &&
+        (tr.args[0].name == "String" || tr.args[0].name == "string")) {
+        return "__Drv_AtomicStr";
     }
 
     // Borrow<T> → const T&, mut Borrow<T> → T&
@@ -270,6 +278,25 @@ std::string Codegen::mapBuiltinNamespace(const std::string& ns, const std::strin
         if (fn=="exit")             return "exit(" + a(0) + ")";
         if (fn=="sleep")            return "__drv_sys_sleep(" + a(0) + ")";
         if (fn=="time")             return "__drv_sys_time()";
+    }
+    // sys.topology.* — hardware topology-aware scheduling
+    if (ns=="topology") {
+        if (fn=="p_cores")      return "__drv_topology_p_cores()";
+        if (fn=="e_cores")      return "__drv_topology_e_cores()";
+        if (fn=="cache_groups") return "__drv_topology_cache_groups()";
+        if (fn=="total")        return "__drv_topology_total()";
+        if (fn=="vendor")       return "__drv_topology_vendor()";
+        if (fn=="pin_threads")  return "__drv_topology_pin_threads()";
+        if (fn=="set_affinity") return "__drv_sys_affinity(" + a(0) + ")";
+    }
+    // sys.sync.* — memory barriers & atomic operations
+    if (ns=="sync") {
+        if (fn=="fence_full")    return "std::atomic_thread_fence(std::memory_order_seq_cst)";
+        if (fn=="fence_acquire") return "std::atomic_thread_fence(std::memory_order_acquire)";
+        if (fn=="fence_release") return "std::atomic_thread_fence(std::memory_order_release)";
+        if (fn=="atomic_load")   return a(0) + ".load(std::memory_order_acquire)";
+        if (fn=="atomic_store")  return a(0) + ".store(" + a(1) + ", std::memory_order_release)";
+        if (fn=="atomic_cas")    return a(0) + ".compare_exchange_strong(" + a(1) + ", " + a(2) + ")";
     }
     // simd.*
     if (ns=="simd") {
@@ -489,24 +516,64 @@ std::string Codegen::emitPipe(const PipeExpr& e) {
 // Annotation handling
 // ─────────────────────────────────────────────────────────────────────────────
 void Codegen::emitFuncAnnotations(const std::vector<std::string>& annots) {
+    // ── Scope-level pragma injection ──────────────────────────────────────────
+    // These emit #pragma directives that wrap the entire function body.
+    // They are collected here for prefix/suffix injection in emitFuncDecl.
+    bool has_fast_math   = false;
+    bool has_strict_math = false;
+
     for (auto& a : annots) {
-        if (a=="@inline")   writeil("[[gnu::always_inline]]");
-        if (a=="@noinline") writeil("[[gnu::noinline]]");
-        if (a=="@pure")     writeil("[[gnu::pure]]");
-        if (a=="@fastcall") writeil("[[gnu::regparm(3)]]");
-        if (a=="@noalias")  writeil("/* @noalias — params marked __restrict__ */");
-        if (a=="@bench")    {} // injected as RAII timer wrapper
-        if (a=="@trace")    {} // injected as branch instrumentation
+        // Attribute-style annotations
+        if (a=="@inline")    writeil("[[gnu::always_inline]]");
+        if (a=="@noinline")  writeil("[[gnu::noinline]]");
+        if (a=="@pure")      writeil("[[gnu::pure]]");
+        if (a=="@fastcall")  writeil("[[gnu::regparm(3)]]");
+        if (a=="@noalias")   writeil("/* @noalias — all pointer params treated as __restrict__ */");
         if (a=="@threadsafe") writeil("/* @threadsafe */");
-        if (a=="@alloc")    writeil("/* @alloc — allocates memory */");
-        if (a=="@io")       writeil("/* @io — performs I/O */");
-        if (a=="@specialize") writeil("/* @specialize — compiler may specialize this function */");
-        // Toulmin annotations → structured comments only
-        if (a.size() > 8 && a.substr(0,8) == "@warrant")  writeil("/* @warrant: " + a.substr(8) + " */");
-        if (a.size() > 9 && a.substr(0,9) == "@rebuttal") writeil("/* @rebuttal: " + a.substr(9) + " */");
-        if (a.size() > 8 && a.substr(0,8) == "@defeats") writeil("/* @defeats: " + a.substr(8) + " */");
-        if (a=="@warrant" || a=="@rebuttal" || a=="@defeats") writeil("/* Toulmin annotation */");
+        if (a=="@alloc")     writeil("/* @alloc */");
+        if (a=="@io")        writeil("/* @io */");
+        if (a=="@specialize") writeil("/* @specialize */");
+        if (a=="@unsafe_legacy") writeil("/* @unsafe_legacy — C FFI, safety checks disabled */");
+
+        // Scope-level math mode
+        if (a=="@fast_math")   has_fast_math   = true;
+        if (a=="@strict_math") has_strict_math = true;
+
+        // Toulmin
+        if (a.rfind("@warrant",0)==0)  writeil("/* @warrant" + a.substr(8) + " */");
+        if (a.rfind("@rebuttal",0)==0) writeil("/* @rebuttal" + a.substr(9) + " */");
+        if (a.rfind("@defeats",0)==0)  writeil("/* @defeats" + a.substr(8) + " */");
+
+        // @align(N) on function → attribute
+        if (a.rfind("@align(",0)==0) {
+            std::string n = a.substr(7, a.size()-8);
+            writeil("[[gnu::aligned(" + n + ")]]");
+        }
     }
+
+    // Emit scope pragma prefix (placed just before the function signature)
+    if (has_fast_math) {
+        writeil("#pragma GCC optimize(\"fast-math\")");
+        writeil("#pragma clang optimize on");
+        writeil("/* @fast_math: floating-point associativity assumed */");
+    }
+    if (has_strict_math) {
+        writeil("#pragma STDC FENV_ACCESS ON");
+        writeil("/* @strict_math: IEEE 754 strict mode */");
+    }
+}
+
+// Emit scope pragma suffix (call after function closing brace)
+static void emitFuncAnnotSuffix(const std::vector<std::string>& annots,
+                                 std::ostringstream& out) {
+    bool has_fast_math   = false;
+    bool has_strict_math = false;
+    for (auto& a : annots) {
+        if (a=="@fast_math")   has_fast_math   = true;
+        if (a=="@strict_math") has_strict_math = true;
+    }
+    if (has_fast_math)   out << "#pragma GCC reset_options\n";
+    if (has_strict_math) out << "#pragma STDC FENV_ACCESS DEFAULT\n";
 }
 
 void Codegen::emitVarAnnotations(const std::vector<std::string>& annots, std::string& prefix) {
@@ -646,10 +713,16 @@ void Codegen::emitFuncDecl(const FuncDecl& s) {
         }
         sig += ">\n" + ret + " " + s.name;
     }
+    bool noalias = std::find(s.annotations.begin(), s.annotations.end(), "@noalias") != s.annotations.end();
     sig += "(";
     for (size_t i=0; i<s.params.size(); ++i) {
         if (i) sig += ", ";
-        sig += mapType(s.params[i].type) + " " + s.params[i].name;
+        std::string ptype = mapType(s.params[i].type);
+        // @noalias: inject __restrict__ for pointer/reference params
+        if (noalias && (ptype.find('*') != std::string::npos ||
+                        ptype.find('&') != std::string::npos))
+            ptype += " __restrict__";
+        sig += ptype + " " + s.params[i].name;
         if (s.params[i].default_val) sig += " = " + emitExpr(*s.params[i].default_val);
     }
     sig += ")";
@@ -696,6 +769,8 @@ void Codegen::emitFuncDecl(const FuncDecl& s) {
     tracing_ = prev_tracing; tracing_func_ = prev_func;
     --indent_;
     writeil("}");
+    // Emit pragma suffix for scope annotations (@fast_math reset, etc.)
+    emitFuncAnnotSuffix(s.annotations, out_);
     writeln();
 }
 
@@ -1161,6 +1236,7 @@ std::string Codegen::emit(const Program& prog) {
     writeln("#include <cstdio>");
     writeln("#include <cstdlib>");
     writeln("#include <cassert>");
+    writeln("#include <atomic>");
     writeln("#ifndef M_PI");
     writeln("#define M_PI 3.14159265358979323846");
     writeln("#endif");
@@ -1190,6 +1266,26 @@ std::string Codegen::emit(const Program& prog) {
     writeln("static auto None = std::nullopt;");
     writeln("template<typename T> DrvResult<T> Ok(T v)   { return DrvResult<T>::Ok(v); }");
     writeln("inline __DrvErr Err(std::string e)           { return {e}; }  // implicit-converts to any DrvResult<T>");
+    writeln();
+
+    // ── atomic<String> wrapper ────────────────────────────────────────────────
+    writeln("// atomic<String>: wraps std::atomic<const char*> + owned std::string storage");
+    writeln("struct __Drv_AtomicStr {");
+    writeln("    std::string storage_;");
+    writeln("    std::atomic<const char*> ptr_;");
+    writeln("    __Drv_AtomicStr() : ptr_(nullptr) {}");
+    writeln("    explicit __Drv_AtomicStr(const std::string& s)");
+    writeln("        : storage_(s), ptr_(storage_.c_str()) {}");
+    writeln("    void store(const std::string& s, std::memory_order ord = std::memory_order_release) {");
+    writeln("        storage_ = s;");
+    writeln("        ptr_.store(storage_.c_str(), ord);");
+    writeln("    }");
+    writeln("    std::string load(std::memory_order ord = std::memory_order_acquire) const {");
+    writeln("        const char* p = ptr_.load(ord);");
+    writeln("        return p ? std::string(p) : std::string{};");
+    writeln("    }");
+    writeln("    operator std::string() const { return load(); }");
+    writeln("};");
     writeln();
 
     // ── drv runtime helpers ───────────────────────────────────────────────────
@@ -1293,7 +1389,93 @@ std::string Codegen::emit(const Program& prog) {
     writeln("    cpu_set_t s; CPU_ZERO(&s); CPU_SET(core,&s);");
     writeln("    pthread_setaffinity_np(pthread_self(),sizeof(s),&s);");
     writeln("#else");
-    writeln("    (void)core; // affinity not supported on this platform");
+    writeln("    (void)core;");
+    writeln("#endif");
+    writeln("}");
+
+    // ── Hardware topology detection ────────────────────────────────────────
+    writeln("// ── Hardware topology (P-core/E-core/CCD-aware scheduling) ──────────");
+    writeln("struct __DrvTopology {");
+    writeln("    std::vector<int> p_cores;     // high-performance cores");
+    writeln("    std::vector<int> e_cores;     // efficiency cores");
+    writeln("    std::vector<std::vector<int>> cache_groups; // cores sharing L3");
+    writeln("    int total_logical{0};");
+    writeln("    std::string vendor;   // 'Intel' / 'AMD' / 'other'");
+    writeln("};");
+    writeln("static __DrvTopology __drv_topology_cache__;");
+    writeln("static bool __drv_topology_loaded__ = false;");
+    writeln();
+    writeln("static __DrvTopology __drv_detect_topology() {");
+    writeln("    __DrvTopology t;");
+    writeln("#ifdef __linux__");
+    writeln("    // Read /proc/cpuinfo to enumerate cores");
+    writeln("    std::ifstream f(\"/proc/cpuinfo\");");
+    writeln("    int max_core = -1;");
+    writeln("    std::unordered_map<int,std::vector<int>> pkg_to_cores;");
+    writeln("    int cur_proc=-1, cur_phys=-1;");
+    writeln("    std::string line;");
+    writeln("    while(std::getline(f,line)) {");
+    writeln("        if(line.rfind(\"processor\",0)==0) {");
+    writeln("            auto p=line.find(':'); if(p!=std::string::npos) cur_proc=std::stoi(line.substr(p+1));");
+    writeln("        } else if(line.rfind(\"physical id\",0)==0) {");
+    writeln("            auto p=line.find(':'); if(p!=std::string::npos) cur_phys=std::stoi(line.substr(p+1));");
+    writeln("        } else if(line.rfind(\"vendor_id\",0)==0 && t.vendor.empty()) {");
+    writeln("            auto p=line.find(':'); if(p!=std::string::npos) {");
+    writeln("                t.vendor=line.substr(p+2);");
+    writeln("                while(!t.vendor.empty()&&(t.vendor.back()==' '||t.vendor.back()=='\\n')) t.vendor.pop_back();");
+    writeln("            }");
+    writeln("        } else if(line.empty() && cur_proc>=0) {");
+    writeln("            if(cur_phys<0)cur_phys=0;");
+    writeln("            pkg_to_cores[cur_phys].push_back(cur_proc);");
+    writeln("            if(cur_proc>max_core)max_core=cur_proc;");
+    writeln("            cur_proc=-1;cur_phys=-1;");
+    writeln("        }");
+    writeln("    }");
+    writeln("    t.total_logical = max_core+1;");
+    writeln("    // AMD: each physical package = CCD, treat as cache group");
+    writeln("    // Intel: assume all cores in same package share L3");
+    writeln("    for(auto&[pkg,cores]:pkg_to_cores) t.cache_groups.push_back(cores);");
+    writeln("    // Heuristic P/E split: Intel 12th+ has two core types via CPUID 0x1A");
+    writeln("    // Simple fallback: first half = P-cores, rest = E-cores (Intel naming)");
+    writeln("    if(t.vendor.find(\"Intel\")!=std::string::npos && t.total_logical>4) {");
+    writeln("        int half=(int)(t.total_logical*0.6);");
+    writeln("        for(int i=0;i<t.total_logical;i++)");
+    writeln("            (i<half?t.p_cores:t.e_cores).push_back(i);");
+    writeln("    } else {");
+    writeln("        for(int i=0;i<t.total_logical;i++) t.p_cores.push_back(i);");
+    writeln("    }");
+    writeln("#elif defined(_WIN32)");
+    writeln("    SYSTEM_INFO si; GetSystemInfo(&si);");
+    writeln("    t.total_logical=(int)si.dwNumberOfProcessors;");
+    writeln("    t.vendor=\"Windows\";");
+    writeln("    for(int i=0;i<t.total_logical;i++) t.p_cores.push_back(i);");
+    writeln("    t.cache_groups.push_back(t.p_cores);");
+    writeln("#else");
+    writeln("    t.total_logical=4; t.vendor=\"unknown\";");
+    writeln("    for(int i=0;i<4;i++) t.p_cores.push_back(i);");
+    writeln("    t.cache_groups.push_back({0,1,2,3});");
+    writeln("#endif");
+    writeln("    return t;");
+    writeln("}");
+    writeln();
+    writeln("static const __DrvTopology& __drv_topology() {");
+    writeln("    if(!__drv_topology_loaded__){__drv_topology_cache__=__drv_detect_topology();__drv_topology_loaded__=true;}");
+    writeln("    return __drv_topology_cache__;");
+    writeln("}");
+    writeln("static std::vector<int> __drv_topology_p_cores(){return __drv_topology().p_cores;}");
+    writeln("static std::vector<int> __drv_topology_e_cores(){return __drv_topology().e_cores;}");
+    writeln("static std::vector<std::vector<int>> __drv_topology_cache_groups(){return __drv_topology().cache_groups;}");
+    writeln("static int __drv_topology_total(){return __drv_topology().total_logical;}");
+    writeln("static std::string __drv_topology_vendor(){return __drv_topology().vendor;}");
+    writeln("// Pin parallel-for threads to the cache-local P-core group");
+    writeln("static void __drv_topology_pin_threads() {");
+    writeln("#ifdef __linux__");
+    writeln("    auto& g = __drv_topology().cache_groups;");
+    writeln("    if(g.empty()) return;");
+    writeln("    auto& best = g[0]; // largest group = most L3-sharing cores");
+    writeln("    cpu_set_t s; CPU_ZERO(&s);");
+    writeln("    for(int c:best) CPU_SET(c,&s);");
+    writeln("    pthread_setaffinity_np(pthread_self(),sizeof(s),&s);");
     writeln("#endif");
     writeln("}");
     // Parallel loop trace (Chrome DevTools format)
@@ -1490,7 +1672,31 @@ std::string Codegen::emit(const Program& prog) {
         writeln("}");
     }
 
+    // Write source map JSON if requested
+    if (!opts_.source_map_file.empty()) writeSourceMap();
+
     return out_.str();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Source map JSON writer
+// Format: { "version":3, "file":"...", "mappings":[{cpp,dri_file,dri_line},...] }
+// ─────────────────────────────────────────────────────────────────────────────
+void Codegen::writeSourceMap() const {
+    std::ofstream f(opts_.source_map_file);
+    if (!f) return;
+    f << "{\n  \"version\": 3,\n";
+    f << "  \"sourceFile\": \"" << opts_.source_file << "\",\n";
+    f << "  \"mappings\": [\n";
+    for (size_t i = 0; i < source_map_.size(); ++i) {
+        auto& e = source_map_[i];
+        f << "    {\"cppLine\":" << e.cpp_line
+          << ",\"driFile\":\"" << e.dri_file << "\""
+          << ",\"driLine\":" << e.dri_line << "}";
+        if (i + 1 < source_map_.size()) f << ",";
+        f << "\n";
+    }
+    f << "  ]\n}\n";
 }
 
 } // namespace drv

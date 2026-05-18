@@ -11,6 +11,8 @@ set(DRI_SOURCES
         compiler/src/parser.cpp
         compiler/src/codegen.cpp
         compiler/src/compiler.cpp
+        compiler/src/analyzer.cpp
+        compiler/src/incremental.cpp
 )
 
 # ── dri compiler executable ───────────────────────────────────────────────────

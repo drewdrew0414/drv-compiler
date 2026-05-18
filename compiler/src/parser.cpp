@@ -52,6 +52,15 @@ void Parser::sync() {
     if (check(TK::Semi)) advance();
 }
 
+// ── Scope annotations that apply to an entire block/function ─────────────────
+// These are pushed onto annot_scope_stack_ rather than attached to a single node
+static bool isScopeAnnotation(const std::string& name) {
+    return name == "@fast_math"  || name == "@strict_math" ||
+           name == "@noalias"    || name == "@threadsafe"  ||
+           name == "@pure"       || name.rfind("@bench",0)==0 ||
+           name.rfind("@trace",0)==0;
+}
+
 // ── annotations ──────────────────────────────────────────────────────────────
 std::vector<std::string> Parser::parseAnnotations() {
     std::vector<std::string> annots;
@@ -61,9 +70,12 @@ std::vector<std::string> Parser::parseAnnotations() {
         if (check(TK::LParen)) {
             name += "(";
             advance();
-            while (!check(TK::RParen) && !check(TK::Eof)) {
+            int depth = 1;
+            while (!check(TK::Eof) && depth > 0) {
+                if (check(TK::LParen)) ++depth;
+                else if (check(TK::RParen)) { if (--depth == 0) break; }
                 name += advance().value;
-                if (check(TK::Comma)) { name += ","; advance(); }
+                if (depth > 0 && check(TK::Comma)) { name += ","; advance(); }
             }
             if (check(TK::RParen)) { advance(); name += ")"; }
         }
@@ -128,14 +140,24 @@ std::vector<Param> Parser::parseParamList() {
 }
 
 // ── block ────────────────────────────────────────────────────────────────────
-StmtList Parser::parseBlock() {
+StmtList Parser::parseBlock(std::vector<std::string> scope_annots) {
     expect(TK::LBrace, "expected '{'");
+    ++scope_depth_;
+    // Push scope-level annotations (@fast_math, @noalias, etc.)
+    if (!scope_annots.empty()) {
+        std::vector<std::string> scope_only;
+        for (auto& a : scope_annots)
+            if (isScopeAnnotation(a)) scope_only.push_back(a);
+        if (!scope_only.empty()) pushAnnotScope(std::move(scope_only));
+    }
     StmtList stmts;
     while (!check(TK::RBrace) && !check(TK::Eof)) {
         try {
             stmts.push_back(parseStmt());
         } catch (...) { sync(); }
     }
+    popAnnotScope();
+    --scope_depth_;
     expect(TK::RBrace, "expected '}'");
     return stmts;
 }

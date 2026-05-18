@@ -2,6 +2,8 @@
 #include "lexer.h"
 #include "parser.h"
 #include "codegen.h"
+#include "analyzer.h"
+#include "incremental.h"
 
 #include <fstream>
 #include <sstream>
@@ -33,46 +35,90 @@ void Compiler::writeCpp(const std::string& src) {
 bool Compiler::invokeBackend(const std::string& cpp_path) {
     if (opts_.output_exe.empty()) return true;
 
-    // Detect compiler — prefer clang++, fall back to g++
 #ifdef _WIN32
-    std::string null_dev = "NUL";
+    const std::string null_dev = "NUL";
 #else
-    std::string null_dev = "/dev/null";
+    const std::string null_dev = "/dev/null";
 #endif
-    std::string cxx = "clang++";
-    if (std::system(("clang++ --version >" + null_dev + " 2>&1").c_str()) != 0) {
-        if (std::system(("g++ --version >" + null_dev + " 2>&1").c_str()) == 0)
-            cxx = "g++";
+    auto probe = [&](const std::string& cmd) -> bool {
+        return std::system((cmd + " --version >" + null_dev + " 2>&1").c_str()) == 0;
+    };
+    auto q = [](const std::string& s) { return "\"" + s + "\""; };
+
+    std::string cxx;
+    std::string flags = "-std=c++20 ";
+    bool is_cross = !opts_.target_triple.empty();
+
+    // ── Cross-compilation mode ─────────────────────────────────────────────
+    if (!opts_.cross_cxx.empty()) {
+        // User explicitly specified cross compiler
+        cxx = opts_.cross_cxx;
+    } else if (is_cross) {
+        // Try clang++ with --target= (most portable cross-compile approach)
+        if (probe("clang++")) {
+            cxx = "clang++";
+            flags += "--target=" + opts_.target_triple + " ";
+            // Sysroot for finding system headers/libs of target OS
+            if (!opts_.sysroot.empty())
+                flags += "--sysroot=" + q(opts_.sysroot) + " ";
+            // Architecture-specific flags based on triple
+            const std::string& t = opts_.target_triple;
+            if (t.find("aarch64")  != std::string::npos) flags += "-march=armv8-a ";
+            else if (t.find("armv7") != std::string::npos) flags += "-march=armv7-a -mfpu=neon ";
+            else if (t.find("riscv64") != std::string::npos) flags += "-march=rv64gc -mabi=lp64d ";
+            else if (t.find("wasm32") != std::string::npos) flags += "--sysroot=/dev/null ";
+            // AVX-512 preset for HPC Linux targets
+            if (t.find("linux") != std::string::npos && opts_.native)
+                flags += "-mavx512f -mavx512bw -mavx512dq -mavx512vl ";
+        } else {
+            // Try GCC cross-compiler binary (e.g. aarch64-linux-gnu-g++)
+            std::string gcc_cross = opts_.target_triple + "-g++";
+            if (probe(gcc_cross)) {
+                cxx = gcc_cross;
+                if (!opts_.sysroot.empty()) flags += "--sysroot=" + q(opts_.sysroot) + " ";
+            } else {
+                std::cerr << "dri: cross-compiler not found for target '" << opts_.target_triple
+                          << "'\n  Tried: clang++ --target=..., " << gcc_cross << "\n"
+                          << "  Install: sudo apt-get install gcc-" << opts_.target_triple << "\n"
+                          << "  Or use --cross-cxx to specify compiler path\n";
+                return false;
+            }
+        }
+    } else {
+        // ── Native compilation ─────────────────────────────────────────────
+        if (probe("clang++")) cxx = "clang++";
+        else if (probe("g++")) cxx = "g++";
         else {
-            return false; // no compiler found
+            std::cerr << "dri: no C++ compiler found (tried clang++, g++)\n";
+            return false;
         }
     }
 
-    // Flags
-    std::string flags = "-std=c++20 ";
+    // ── Build flags ────────────────────────────────────────────────────────
     if (opts_.debug)        flags += "-O0 -g -DDEBUG ";
     else if (opts_.release) flags += "-O3 -DNDEBUG ";
     else                    flags += "-O" + std::to_string(opts_.opt_level) + " ";
 
-    if (opts_.native) flags += "-march=native ";
-    if (opts_.lto)    flags += "-flto ";
+    if (opts_.native && !is_cross) flags += "-march=native ";
+    if (opts_.lto)                 flags += "-flto ";
+    for (auto& d : opts_.defines)  flags += "-D" + d + " ";
 
-    for (auto& d : opts_.defines) flags += "-D" + d + " ";
-
-    // OpenMP — optional, skip silently if unavailable
+    // OpenMP — skip on Windows (needs separate runtime DLL)
 #ifndef _WIN32
     flags += "-fopenmp ";
 #endif
 
-    // Quote paths for spaces
-    auto q = [](const std::string& s) { return "\"" + s + "\""; };
     std::string cmd = cxx + " " + flags + " " + q(cpp_path) +
                       " -o " + q(opts_.output_exe) +
 #ifndef _WIN32
-                      " -lm"
+                      " -lm "
 #endif
                       " 2>&1";
     int ret = std::system(cmd.c_str());
+    if (ret != 0 && is_cross) {
+        std::cerr << "dri: cross-compilation failed for target '" << opts_.target_triple << "'\n"
+                  << "     Check that target sysroot is installed.\n";
+    }
     return ret == 0;
 }
 
@@ -127,9 +173,44 @@ CompileResult Compiler::compile() {
             }
         }
 
+        // 3c. Static analysis (thread-safety + aliasing + @packed checks)
+        if (!opts_.no_analyze) {
+            Analyzer analyzer(opts_.input_file);
+            bool ok = analyzer.analyze(program);
+            // Collect warnings regardless
+            for (auto& w : analyzer.warnings())
+                result.warnings.push_back(w);
+            if (!ok) {
+                for (auto& e : analyzer.errors())
+                    result.errors.push_back(e);
+                return result;
+            }
+        }
+
         if (opts_.check_only) {
             result.success = true;
             return result;
+        }
+
+        // 3d. Incremental build: determine cpp output path early so we can check cache
+        std::string cpp_path_early = opts_.output_cpp.empty()
+            ? (fs::temp_directory_path() / "__drv_out__.cpp").string()
+            : opts_.output_cpp;
+
+        if (opts_.incremental) {
+            std::string cache_root = opts_.cache_dir.empty()
+                ? fs::path(opts_.input_file).parent_path().string()
+                : opts_.cache_dir;
+            IncrementalCache cache(cache_root);
+            if (cache.isUpToDate(opts_.input_file, cpp_path_early)) {
+                // .cpp is up to date — skip transpile, just compile if needed
+                if (!opts_.output_exe.empty()) {
+                    bool ok = invokeBackend(cpp_path_early);
+                    if (!ok) { result.errors.push_back("backend compilation failed"); return result; }
+                }
+                result.success = true;
+                return result;
+            }
         }
 
         // 4. Code generation
@@ -140,6 +221,8 @@ CompileResult Compiler::compile() {
         cg_opts.opt_level = opts_.opt_level;
         cg_opts.emit_line_directives = true;
         cg_opts.trace_file = opts_.trace_file;
+        cg_opts.source_map_file = opts_.source_map_file;
+        cg_opts.target_triple = opts_.target_triple;
 
         Codegen cg(cg_opts);
         result.cpp_source = cg.emit(program);
@@ -168,6 +251,15 @@ CompileResult Compiler::compile() {
                 result.errors.push_back("backend compilation failed");
                 return result;
             }
+        }
+
+        // 7. Update incremental cache on success
+        if (opts_.incremental) {
+            std::string cache_root = opts_.cache_dir.empty()
+                ? fs::path(opts_.input_file).parent_path().string()
+                : opts_.cache_dir;
+            IncrementalCache cache(cache_root);
+            cache.updateEntry(opts_.input_file);
         }
 
         result.success = true;

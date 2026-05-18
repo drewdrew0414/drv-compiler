@@ -13,6 +13,8 @@ const KEYWORDS_CONTROL = [
   'in','of','where','otherwise','exists',
   'parallel','simd','async','await','spawn','lazy',
   'static_if','compile_eval','reduction',
+  'fence_full','fence_acquire','fence_release',
+  'atomic_load','atomic_store','atomic_cas',
 ];
 
 const KEYWORDS_DECL = [
@@ -32,7 +34,7 @@ const KEYWORDS_SPECIAL = [
 const TYPES = [
   'int','long','float','double','char','String','boolean','void',
   'var','auto','tensor','list','Map','Union','Option','Result',
-  'Own','Ref','Borrow','Self','arg','dim',
+  'Own','Ref','Borrow','Self','arg','dim','atomic',
 ];
 
 const BUILTINS_GLOBAL = [
@@ -52,14 +54,16 @@ const BUILTINS_NS = {
   map:     ['set','get','has','remove','keys','values','length'],
   math:    ['abs','pow','sqrt','log','log2','exp','sin','cos','tan','floor','ceil','round','clamp'],
   io:      ['read_file','write_file','file_exists','file_size','list_dir','mmap_read'],
-  sys:     ['argv','env','exit','time','sleep','affinity'],
-  simd:    ['sum','dot','max','min','mul','add'],
-  mem:     ['alloc','free','copy','set'],
-  perf:    ['clock','rdtsc'],
-  bits:    ['and','or','xor','not','shl','shr','popcount','clz'],
-  diff:    ['grad','jacobian'],
-  reflect: ['fields','methods','has_field'],
-  wait:    ['tick','seconds','yield'],
+  sys:      ['argv','env','exit','time','sleep','affinity'],
+  sync:     ['fence_full','fence_acquire','fence_release','atomic_load','atomic_store','atomic_cas'],
+  topology: ['p_cores','e_cores','cache_groups','total','vendor','pin_threads','set_affinity'],
+  simd:     ['sum','dot','max','min','mul','add'],
+  mem:      ['alloc','free','copy','set'],
+  perf:     ['clock','rdtsc'],
+  bits:     ['and','or','xor','not','shl','shr','popcount','clz'],
+  diff:     ['grad','jacobian'],
+  reflect:  ['fields','methods','has_field'],
+  wait:     ['tick','seconds','yield'],
 };
 
 const ANNOTATIONS = [
@@ -67,6 +71,7 @@ const ANNOTATIONS = [
   '@pure','@fastcall','@noalias','@threadsafe','@alloc','@io','@stack',
   '@heap','@local','@region','@warrant','@rebuttal','@defeats',
   '@specialize','@abstract','@unsafe_legacy',
+  '@fast_math','@strict_math',
 ];
 
 // ── Builtin documentation ──────────────────────────────────────────────────
@@ -137,6 +142,21 @@ const NS_DOCS = {
   'wait.tick':         '`wait.tick(n)` — wait n ticks',
   'wait.seconds':      '`wait.seconds(f)` — wait f seconds',
   'wait.yield':        '`wait.yield()` — yield to scheduler',
+  // sys.sync
+  'sync.fence_full':    '`sys.sync.fence_full()` — full sequential-consistency memory barrier',
+  'sync.fence_acquire': '`sys.sync.fence_acquire()` — acquire memory barrier (read fence)',
+  'sync.fence_release': '`sys.sync.fence_release()` — release memory barrier (write fence)',
+  'sync.atomic_load':   '`sys.sync.atomic_load(x)` → T — atomic read with acquire ordering',
+  'sync.atomic_store':  '`sys.sync.atomic_store(x, v)` — atomic write with release ordering',
+  'sync.atomic_cas':    '`sys.sync.atomic_cas(x, expected, new)` → boolean — compare-and-swap',
+  // sys.topology
+  'topology.p_cores':      '`sys.topology.p_cores()` → list<int> — high-performance core IDs',
+  'topology.e_cores':      '`sys.topology.e_cores()` → list<int> — efficiency core IDs',
+  'topology.cache_groups': '`sys.topology.cache_groups()` → list<list<int>> — cores sharing L3 cache (AMD CCD / Intel ring)',
+  'topology.total':        '`sys.topology.total()` → int — total logical CPU count',
+  'topology.vendor':       '`sys.topology.vendor()` → String — CPU vendor (Intel / AMD / other)',
+  'topology.pin_threads':  '`sys.topology.pin_threads()` — pin calling thread to best L3-sharing core group',
+  'topology.set_affinity': '`sys.topology.set_affinity(core_id)` — pin calling thread to specific core',
 };
 
 // ── CompletionItemProvider ──────────────────────────────────────────────────
@@ -250,17 +270,19 @@ class DriHoverProvider {
         '@bench':        'Measure execution time of a function or block',
         '@trace':        'Branch tracing — emits Chrome DevTools JSON',
         '@align':        '`@align(N)` — align to N bytes',
-        '@packed':       'Remove struct padding',
+        '@packed':       'Remove struct padding (cannot be used with `extends`)',
         '@layout_soa':   'Structure of Arrays (SoA) memory layout',
         '@inline':       'Force inlining',
         '@noinline':     'Prevent inlining',
         '@pure':         'Pure function — no side effects',
-        '@noalias':      'No pointer aliasing — vectorization hint',
+        '@noalias':      'No pointer aliasing — all pointer/reference params get `__restrict__`. Static analyzer checks call sites.',
         '@threadsafe':   'Thread-safety guarantee',
         '@region':       '`@region name { }` — arena allocation scope',
         '@warrant':      'Safety guarantee (manually verified)',
         '@rebuttal':     'Safety rebuttal — suppress specific warning',
         '@unsafe_legacy':'Disable safety checks for legacy C FFI',
+        '@fast_math':    'Scope-level fast-math: enables `#pragma GCC optimize("fast-math")` for the function. Floating-point associativity assumed — may affect precision.',
+        '@strict_math':  'Scope-level strict IEEE 754: enables `#pragma STDC FENV_ACCESS ON`. Required for detecting NaN/Inf exceptions.',
       };
       if (docs[word]) return new vscode.Hover(new vscode.MarkdownString(docs[word]));
     }
@@ -303,18 +325,100 @@ function runCheck(document) {
   });
 }
 
-// ── Command handlers ───────────────────────────────────────────────────────
+// ── Shell detection & command building ────────────────────────────────────────
+//
+// Shell differences on Windows:
+//   PowerShell 5.1 : no && operator; needs `& "exe"` call operator for quoted paths
+//   PowerShell 7+  : && supported, still needs & call operator
+//   CMD            : && supported, no call operator needed
+//   Bash/WSL       : && supported, no call operator needed
 
 function getCompilerPath() {
-  return vscode.workspace.getConfiguration('dri').get('compilerPath', 'drv');
+  return vscode.workspace.getConfiguration('dri').get('compilerPath', 'dri');
 }
 
-function runInTerminal(cmd) {
+// Detect active terminal shell: 'powershell' | 'ps7' | 'cmd' | 'bash'
+function detectShell() {
+  const cfg  = vscode.workspace.getConfiguration('dri');
+  const pref = cfg.get('shell', 'auto');
+  if (pref !== 'auto') return pref;
+
+  const term = vscode.window.activeTerminal;
+  if (term) {
+    const n = term.name.toLowerCase();
+    if (n.includes('cmd') || n.includes('command prompt')) return 'cmd';
+    if (n.includes('pwsh') || n.includes('powershell 7'))  return 'ps7';
+    if (n.includes('powershell'))                           return 'powershell';
+    if (n.includes('bash') || n.includes('wsl') || n.includes('git')) return 'bash';
+    if (n.includes('zsh')  || n.includes('fish') || n.includes('sh')) return 'bash';
+  }
+  return process.platform === 'win32' ? 'powershell' : 'bash';
+}
+
+const _q = p => `"${p}"`;
+
+// Build "compile + run" command for each shell
+function buildRunCmd(compiler, driFile, exeFile, shell) {
+  switch (shell) {
+    case 'cmd':
+      // CMD: && works natively
+      return `${_q(compiler)} ${_q(driFile)} --exe ${_q(exeFile)} && ${_q(exeFile)}`;
+    case 'ps7':
+      // PowerShell 7: && works, & needed for quoted exe
+      return `& ${_q(compiler)} ${_q(driFile)} --exe ${_q(exeFile)} && & ${_q(exeFile)}`;
+    case 'powershell':
+      // PowerShell 5.1: no &&, use ; if ($LASTEXITCODE -eq 0)
+      return `& ${_q(compiler)} ${_q(driFile)} --exe ${_q(exeFile)}; ` +
+             `if ($LASTEXITCODE -eq 0) { & ${_q(exeFile)} }`;
+    default: // bash / zsh / wsl
+      return `${_q(compiler)} ${_q(driFile)} --exe ${_q(exeFile)} && ${_q(exeFile)}`;
+  }
+}
+
+function buildBuildCmd(compiler, driFile, exeFile, shell) {
+  switch (shell) {
+    case 'powershell':
+    case 'ps7':
+      return `& ${_q(compiler)} ${_q(driFile)} --exe ${_q(exeFile)}`;
+    default:
+      return `${_q(compiler)} ${_q(driFile)} --exe ${_q(exeFile)}`;
+  }
+}
+
+function buildCheckCmd(compiler, driFile, shell) {
+  switch (shell) {
+    case 'powershell':
+    case 'ps7':
+      return `& ${_q(compiler)} ${_q(driFile)} --check`;
+    default:
+      return `${_q(compiler)} ${_q(driFile)} --check`;
+  }
+}
+
+// Create or reuse the 'dri' terminal with user-preferred shell
+function getOrCreateTerminal(shell) {
   let term = vscode.window.terminals.find(t => t.name === 'dri');
-  if (!term) term = vscode.window.createTerminal('dri');
+  if (term) return term;
+
+  const opts = { name: 'dri' };
+  if (process.platform === 'win32') {
+    const cfgShell = vscode.workspace.getConfiguration('dri').get('shell', 'auto');
+    const target   = cfgShell === 'auto' ? shell : cfgShell;
+    if (target === 'cmd')  opts.shellPath = 'cmd.exe';
+    else if (target === 'ps7') opts.shellPath = 'pwsh.exe';
+    // default: VSCode's configured default terminal (PS 5.1)
+  }
+  return vscode.window.createTerminal(opts);
+}
+
+function runInTerminal(cmd, shell) {
+  const s    = shell || detectShell();
+  const term = getOrCreateTerminal(s);
   term.show(true);
   term.sendText(cmd);
 }
+
+// ── Command handlers ───────────────────────────────────────────────────────
 
 function cmdRunFile() {
   const editor = vscode.window.activeTextEditor;
@@ -327,9 +431,10 @@ function cmdRunFile() {
   const outDir   = path.dirname(filePath);
   const outExe   = path.join(outDir, outName + (process.platform === 'win32' ? '.exe' : ''));
   const compiler = getCompilerPath();
+  const shell    = detectShell();
 
   editor.document.save().then(() => {
-    runInTerminal(`"${compiler}" "${filePath}" --exe "${outExe}" && "${outExe}"`);
+    runInTerminal(buildRunCmd(compiler, filePath, outExe, shell), shell);
   });
 }
 
@@ -344,9 +449,10 @@ function cmdBuildExe() {
   const outDir   = path.dirname(filePath);
   const outExe   = path.join(outDir, outName + (process.platform === 'win32' ? '.exe' : ''));
   const compiler = getCompilerPath();
+  const shell    = detectShell();
 
   editor.document.save().then(() => {
-    runInTerminal(`"${compiler}" "${filePath}" --exe "${outExe}"`);
+    runInTerminal(buildBuildCmd(compiler, filePath, outExe, shell), shell);
   });
 }
 
@@ -358,9 +464,10 @@ function cmdCheckSyntax() {
   }
   const filePath = editor.document.fileName;
   const compiler = getCompilerPath();
+  const shell    = detectShell();
 
   editor.document.save().then(() => {
-    runInTerminal(`"${compiler}" "${filePath}" --check`);
+    runInTerminal(buildCheckCmd(compiler, filePath, shell), shell);
   });
 }
 

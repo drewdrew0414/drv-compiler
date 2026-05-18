@@ -51,10 +51,15 @@ static const std::unordered_map<std::string_view, TK> KEYWORDS = {
     {"null",          TK::KwNull},     {"None",          TK::KwNone},
     {"Some",          TK::KwSome},     {"Ok",            TK::KwOk},
     {"Err",           TK::KwErr},
-    {"lazy",          TK::KwLazy},     {"extern",        TK::KwExtern},
-    {"compile_eval",  TK::KwCompileEval},
-    {"static_if",     TK::KwStaticIf},
-    {"dim",           TK::KwDimKw},
+    {"lazy",          TK::KwLazy},        {"extern",        TK::KwExtern},
+    {"compile_eval",  TK::KwCompileEval}, {"static_if",     TK::KwStaticIf},
+    {"dim",           TK::KwDimKw},       {"atomic",        TK::KwAtomic},
+    {"fn",            TK::KwFn},
+    // sys.sync memory barrier builtins
+    {"fence_full",    TK::KwFenceFull},   {"fence_acquire", TK::KwFenceAcquire},
+    {"fence_release", TK::KwFenceRelease},
+    {"atomic_load",   TK::KwAtomicLoad},  {"atomic_store",  TK::KwAtomicStore},
+    {"atomic_cas",    TK::KwAtomicCAS},
 };
 
 TK Lexer::keywordKind(std::string_view s) noexcept {

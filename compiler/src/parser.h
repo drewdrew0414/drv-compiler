@@ -21,6 +21,32 @@ private:
     size_t             pos_{0};
     std::vector<std::string> errors_;
 
+    // ── Annotation scope stack ────────────────────────────────────────────────
+    // Each entry holds annots active at that block depth.
+    // Pushed on '{', popped on '}'.  Parser attaches active scope to nodes.
+    struct AnnotScopeFrame {
+        std::vector<std::string> annots; // annotations declared on this scope
+        int depth{0};
+    };
+    std::vector<AnnotScopeFrame> annot_scope_stack_;
+    int scope_depth_{0};
+
+    void pushAnnotScope(std::vector<std::string> a) {
+        annot_scope_stack_.push_back({std::move(a), scope_depth_});
+    }
+    void popAnnotScope() {
+        while (!annot_scope_stack_.empty() &&
+               annot_scope_stack_.back().depth >= scope_depth_)
+            annot_scope_stack_.pop_back();
+    }
+    // Returns all active annotations from enclosing scopes
+    std::vector<std::string> activeAnnotations() const {
+        std::vector<std::string> result;
+        for (auto& f : annot_scope_stack_)
+            for (auto& a : f.annots) result.push_back(a);
+        return result;
+    }
+
     // ── Token navigation ──────────────────────────────────────────────────────
     const Token& peek(int offset = 0) const noexcept;
     const Token& current()            const noexcept { return peek(); }
@@ -62,7 +88,7 @@ private:
     StmtPtr parseSpawnStmt();
     StmtPtr parseStaticIfStmt();
     StmtPtr parseExistsStmt();
-    StmtList parseBlock();  // { stmts }
+    StmtList parseBlock(std::vector<std::string> scope_annots = {});  // { stmts }
 
     // ── Type parsing ──────────────────────────────────────────────────────────
     TypeRef parseTypeRef();
