@@ -1,0 +1,449 @@
+{
+  "Hello World": {
+    "prefix": "hello",
+    "body": ["print(\"Hello, World!\");"],
+    "description": "Print Hello World"
+  },
+
+  "Variable Declaration": {
+    "prefix": "var",
+    "body": ["${1:type} ${2:name} = ${3:value};"],
+    "description": "Variable declaration"
+  },
+
+  "Function Definition": {
+    "prefix": "fn",
+    "body": [
+      "${1:void} ${2:name}(${3:params}) {",
+      "\t${0}",
+      "}"
+    ],
+    "description": "Function definition"
+  },
+
+  "Generic Function": {
+    "prefix": "fngen",
+    "body": [
+      "${1:T} ${2:name}<${3:T}>(${4:T} ${5:param}) {",
+      "\treturn ${0:param};",
+      "}"
+    ],
+    "description": "Generic function definition"
+  },
+
+  "Class Definition": {
+    "prefix": "class",
+    "body": [
+      "class ${1:Name} {",
+      "\t${2:int} ${3:field};",
+      "",
+      "\tvoid ${4:method}() {",
+      "\t\t${0}",
+      "\t}",
+      "}"
+    ],
+    "description": "Class definition"
+  },
+
+  "Abstract Class": {
+    "prefix": "abstract",
+    "body": [
+      "abstract class ${1:Name} {",
+      "\tabstract ${2:void} ${3:method}();",
+      "",
+      "\t${2:void} ${4:concrete}() {",
+      "\t\t${0}",
+      "\t}",
+      "}"
+    ],
+    "description": "Abstract class"
+  },
+
+  "Trait Definition": {
+    "prefix": "trait",
+    "body": [
+      "trait ${1:Name} {",
+      "\t${2:void} ${3:method}();",
+      "}"
+    ],
+    "description": "Trait definition"
+  },
+
+  "Impl Block": {
+    "prefix": "impl",
+    "body": [
+      "impl ${1:Trait} for ${2:Class} {",
+      "\t${3:void} ${4:method}() {",
+      "\t\t${0}",
+      "\t}",
+      "}"
+    ],
+    "description": "Trait implementation block"
+  },
+
+  "If Statement": {
+    "prefix": "if",
+    "body": [
+      "if (${1:condition}) {",
+      "\t${0}",
+      "}"
+    ],
+    "description": "If statement"
+  },
+
+  "If-Else Statement": {
+    "prefix": "ife",
+    "body": [
+      "if (${1:condition}) {",
+      "\t${2}",
+      "} else {",
+      "\t${0}",
+      "}"
+    ],
+    "description": "If-else statement"
+  },
+
+  "For Range": {
+    "prefix": "forr",
+    "body": [
+      "for (${1:i} in ${2:0}..${3:n}) {",
+      "\t${0}",
+      "}"
+    ],
+    "description": "Range-based for loop"
+  },
+
+  "For Each": {
+    "prefix": "fore",
+    "body": [
+      "for (${1:item} of ${2:collection}) {",
+      "\t${0}",
+      "}"
+    ],
+    "description": "For-each loop"
+  },
+
+  "For C-Style": {
+    "prefix": "forc",
+    "body": [
+      "for (${1:int} ${2:i} = ${3:0}; ${2:i} < ${4:n}; ${2:i}++) {",
+      "\t${0}",
+      "}"
+    ],
+    "description": "C-style for loop"
+  },
+
+  "While Loop": {
+    "prefix": "while",
+    "body": [
+      "while (${1:condition}) {",
+      "\t${0}",
+      "}"
+    ],
+    "description": "While loop"
+  },
+
+  "Parallel For": {
+    "prefix": "pfor",
+    "body": [
+      "parallel for (${1:i} in ${2:0}..${3:n}) {",
+      "\t${0}",
+      "}"
+    ],
+    "description": "Parallel for loop"
+  },
+
+  "Parallel For Reduction": {
+    "prefix": "pred",
+    "body": [
+      "parallel for reduction(${1:+}:${2:total}) (${3:x} of ${4:data}) {",
+      "\t${2:total} ${1:+}= ${3:x};",
+      "}"
+    ],
+    "description": "Parallel for with reduction"
+  },
+
+  "SIMD For": {
+    "prefix": "sfor",
+    "body": [
+      "simd for (${1:i} in ${2:0}..${3:n}) {",
+      "\t${0}",
+      "}"
+    ],
+    "description": "SIMD for loop"
+  },
+
+  "SIMD Where": {
+    "prefix": "where",
+    "body": [
+      "where (${1:condition}) {",
+      "\t${2}",
+      "} otherwise {",
+      "\t${0}",
+      "}"
+    ],
+    "description": "SIMD where/otherwise mask"
+  },
+
+  "Switch Statement": {
+    "prefix": "switch",
+    "body": [
+      "switch (${1:expr}) {",
+      "\tcase (${2:val}) -> { ${3}; };",
+      "\tcase default -> { ${0}; };",
+      "};"
+    ],
+    "description": "Switch statement"
+  },
+
+  "Match Statement": {
+    "prefix": "match",
+    "body": [
+      "match ${1:expr} {",
+      "\tSome(${2:v}) => { ${3}; };",
+      "\tNone => { ${0}; };",
+      "};"
+    ],
+    "description": "Match pattern matching"
+  },
+
+  "Match Result": {
+    "prefix": "matchr",
+    "body": [
+      "match ${1:result} {",
+      "\tOk(${2:v}) => { ${3}; };",
+      "\tErr(${4:e}) => { ${0}; };",
+      "};"
+    ],
+    "description": "Result<T> match"
+  },
+
+  "Try-Catch": {
+    "prefix": "try",
+    "body": [
+      "try {",
+      "\t${1}",
+      "} catch (${2:e}) {",
+      "\tprint(${2:e});",
+      "\t${0}",
+      "}"
+    ],
+    "description": "Try-catch block"
+  },
+
+  "Async Function": {
+    "prefix": "async",
+    "body": [
+      "async ${1:void} ${2:name}(${3:params}) {",
+      "\t${0}",
+      "}"
+    ],
+    "description": "Async function"
+  },
+
+  "Spawn Block": {
+    "prefix": "spawn",
+    "body": [
+      "spawn {",
+      "\t${0}",
+      "}"
+    ],
+    "description": "Spawn background task"
+  },
+
+  "Lambda Expression": {
+    "prefix": "lam",
+    "body": ["|${1:x}| -> ${0:x}"],
+    "description": "Lambda expression"
+  },
+
+  "Lambda with Capture": {
+    "prefix": "lamc",
+    "body": ["[copy ${1:var}] |${2:x}| -> ${0:x * var}"],
+    "description": "Lambda with capture"
+  },
+
+  "Lambda Block": {
+    "prefix": "lamb",
+    "body": [
+      "|${1:x}| {",
+      "\t${0}",
+      "}"
+    ],
+    "description": "Block-body lambda"
+  },
+
+  "Filter-Map-Reduce": {
+    "prefix": "fmr",
+    "body": [
+      "${1:result} = ${2:data}",
+      "\t.filter(|${3:x}| -> ${4:x > 0})",
+      "\t.map(|${3:x}| -> ${5:x * 2})",
+      "\t.reduce(${6:0}, |${7:acc}, ${3:x}| -> ${7:acc} + ${3:x});"
+    ],
+    "description": "Filter-map-reduce pipeline"
+  },
+
+  "Result Function": {
+    "prefix": "resfn",
+    "body": [
+      "Result<${1:int}> ${2:name}(${3:params}) {",
+      "\tif (${4:error_condition}) {",
+      "\t\treturn Err(\"${5:error message}\");",
+      "\t}",
+      "\treturn Ok(${0});",
+      "}"
+    ],
+    "description": "Function returning Result<T>"
+  },
+
+  "Option Unwrap": {
+    "prefix": "optm",
+    "body": [
+      "match ${1:opt} {",
+      "\tSome(${2:v}) => { ${3}; };",
+      "\tNone => { ${0}; };",
+      "};"
+    ],
+    "description": "Unwrap Option<T> via match"
+  },
+
+  "Dim Declaration": {
+    "prefix": "dim",
+    "body": ["dim ${1:Meter} = \"${2:m}\";"],
+    "description": "Physical unit declaration"
+  },
+
+  "Module Declaration": {
+    "prefix": "mod",
+    "body": ["module ${1:name};"],
+    "description": "Module declaration"
+  },
+
+  "Use Declaration": {
+    "prefix": "use",
+    "body": ["use ${1:module};"],
+    "description": "Module import"
+  },
+
+  "Compile Eval Function": {
+    "prefix": "ceval",
+    "body": [
+      "compile_eval ${1:int} ${2:name}(${3:int n}) {",
+      "\t${0}",
+      "}"
+    ],
+    "description": "Compile-time eval function"
+  },
+
+  "Static If": {
+    "prefix": "sif",
+    "body": [
+      "static_if (${1:DEBUG}) {",
+      "\t${2}",
+      "} else {",
+      "\t${0}",
+      "}"
+    ],
+    "description": "Compile-time static_if branch"
+  },
+
+  "Region Block": {
+    "prefix": "region",
+    "body": [
+      "@region ${1:scratch} {",
+      "\t${0}",
+      "}"
+    ],
+    "description": "@region arena allocation scope"
+  },
+
+  "Bench Annotation": {
+    "prefix": "@bench",
+    "body": ["@bench"],
+    "description": "@bench — measure execution time"
+  },
+
+  "Trace Annotation": {
+    "prefix": "@trace",
+    "body": ["@trace"],
+    "description": "@trace — branch tracing"
+  },
+
+  "Align Annotation": {
+    "prefix": "@align",
+    "body": ["@align(${1:64})"],
+    "description": "@align(N) — memory alignment"
+  },
+
+  "Template String": {
+    "prefix": "ts",
+    "body": ["`${1:Hello} \\${${2:name}}!`"],
+    "description": "Template string (backtick interpolation)"
+  },
+
+  "Own Pointer": {
+    "prefix": "own",
+    "body": ["Own<${1:Type}> ${2:name} = new ${1:Type}();"],
+    "description": "Own<T> unique owning pointer"
+  },
+
+  "Ref Pointer": {
+    "prefix": "ref",
+    "body": ["Ref<${1:Type}> ${2:name} = new ${1:Type}();"],
+    "description": "Ref<T> shared pointer"
+  },
+
+  "Extern C": {
+    "prefix": "extern",
+    "body": [
+      "extern \"C\" {",
+      "\t${1:void} ${2:func}(${3:params});",
+      "}"
+    ],
+    "description": "Extern C FFI declaration"
+  },
+
+  "List Operations": {
+    "prefix": "lst",
+    "body": [
+      "list<${1:int}> ${2:items} = [];",
+      "lst.push(${2:items}, ${3:value});",
+      "int ${4:len} = lst.length(${2:items});"
+    ],
+    "description": "Basic list operations"
+  },
+
+  "Map Operations": {
+    "prefix": "map",
+    "body": [
+      "Map<${1:String}, ${2:int}> ${3:m} = {};",
+      "map.set(${3:m}, ${4:key}, ${5:value});",
+      "${2:int} ${6:v} = map.get(${3:m}, ${4:key});"
+    ],
+    "description": "Basic map operations"
+  },
+
+  "Parallel Reduction Sum": {
+    "prefix": "parsum",
+    "body": [
+      "int ${1:total} = 0;",
+      "parallel for reduction(+:${1:total}) (${2:x} of ${3:data}) {",
+      "\t${1:total} += ${2:x};",
+      "};",
+      "print(\"sum:\", ${1:total});"
+    ],
+    "description": "Parallel sum reduction"
+  },
+
+  "Main Entry": {
+    "prefix": "main",
+    "body": [
+      "# ${1:Program description}",
+      "module ${2:main};",
+      "",
+      "${0}"
+    ],
+    "description": "dri file entry point"
+  }
+}

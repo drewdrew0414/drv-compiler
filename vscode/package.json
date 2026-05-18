@@ -1,0 +1,102 @@
+{
+  "name": "dri-lang",
+  "displayName": "dri Language Support",
+  "description": "dri HPC systems programming language — syntax highlighting, autocomplete, snippet suggestions",
+  "version": "0.1.0",
+  "publisher": "drewdrew0414",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/drewdrew0414/dri-lang"
+  },
+  "engines": { "vscode": "^1.75.0" },
+  "categories": ["Programming Languages", "Snippets"],
+  "keywords": ["dri", "hpc", "systems", "parallel", "simd"],
+  "icon": "extension/icon.png",
+  "activationEvents": ["onLanguage:dri"],
+  "main": "./src/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "dri",
+        "aliases": ["dri", "dri-lang"],
+        "extensions": [".dri"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "dri",
+        "scopeName": "source.dri",
+        "path": "./syntaxes/dri.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "dri",
+        "path": "./snippets/dri.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "dri.runFile",
+        "title": "dri: Run File",
+        "icon": "$(play)"
+      },
+      {
+        "command": "dri.buildExe",
+        "title": "dri: Build Executable",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "dri.checkSyntax",
+        "title": "dri: Check Syntax",
+        "icon": "$(check)"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "dri.runFile",
+          "when": "resourceExtname == .dri",
+          "group": "navigation"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "dri.runFile",
+          "when": "resourceExtname == .dri",
+          "group": "dri"
+        },
+        {
+          "command": "dri.buildExe",
+          "when": "resourceExtname == .dri",
+          "group": "dri"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "dri",
+      "properties": {
+        "dri.compilerPath": {
+          "type": "string",
+          "default": "dri",
+          "description": "Path to the dri compiler executable"
+        },
+        "dri.autoFormat": {
+          "type": "boolean",
+          "default": true,
+          "description": "Auto-format on save"
+        },
+        "dri.showInlayHints": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show type inlay hints"
+        }
+      }
+    }
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.75.0",
+    "@vscode/vsce": "^2.19.0"
+  }
+}

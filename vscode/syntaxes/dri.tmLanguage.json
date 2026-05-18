@@ -1,0 +1,258 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "dri",
+  "scopeName": "source.dri",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#template-strings" },
+    { "include": "#strings" },
+    { "include": "#annotations" },
+    { "include": "#keywords-control" },
+    { "include": "#keywords-type" },
+    { "include": "#keywords-modifier" },
+    { "include": "#keywords-special" },
+    { "include": "#builtins-namespace" },
+    { "include": "#builtins-global" },
+    { "include": "#numeric-literals" },
+    { "include": "#operators" },
+    { "include": "#function-definition" },
+    { "include": "#class-definition" },
+    { "include": "#trait-definition" },
+    { "include": "#function-call" },
+    { "include": "#identifiers" }
+  ],
+  "repository": {
+
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.block.dri",
+          "begin": "!#",
+          "end": "##",
+          "captures": {
+            "0": { "name": "punctuation.definition.comment.dri" }
+          }
+        },
+        {
+          "name": "comment.line.number-sign.dri",
+          "match": "#.*$"
+        }
+      ]
+    },
+
+    "template-strings": {
+      "name": "string.template.dri",
+      "begin": "`",
+      "end": "`",
+      "patterns": [
+        {
+          "name": "meta.embedded.dri",
+          "begin": "\\$\\{",
+          "end": "\\}",
+          "beginCaptures": { "0": { "name": "punctuation.section.embedded.begin.dri" } },
+          "endCaptures":   { "0": { "name": "punctuation.section.embedded.end.dri" } },
+          "patterns": [{ "include": "$self" }]
+        },
+        {
+          "name": "constant.character.escape.dri",
+          "match": "\\\\."
+        }
+      ]
+    },
+
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.dri",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [{ "name": "constant.character.escape.dri", "match": "\\\\." }]
+        },
+        {
+          "name": "string.quoted.single.dri",
+          "begin": "'",
+          "end": "'",
+          "patterns": [{ "name": "constant.character.escape.dri", "match": "\\\\." }]
+        }
+      ]
+    },
+
+    "annotations": {
+      "patterns": [
+        {
+          "name": "entity.name.tag.dri",
+          "match": "@(bench|trace|align|packed|layout_soa|inline|noinline|pure|fastcall|noalias|threadsafe|alloc|io|stack|heap|local|region|warrant|rebuttal|defeats|specialize|abstract|unsafe_legacy)(\\([^)]*\\))?"
+        },
+        {
+          "name": "entity.name.tag.dri",
+          "match": "@[a-zA-Z_][a-zA-Z0-9_]*(\\([^)]*\\))?"
+        }
+      ]
+    },
+
+    "keywords-control": {
+      "patterns": [
+        {
+          "name": "keyword.control.dri",
+          "match": "\\b(if|else|while|for|return|break|continue|pass|switch|case|default|match|try|catch|throw|in|of|where|otherwise|exists)\\b"
+        },
+        {
+          "name": "keyword.control.dri",
+          "match": "\\b(parallel|simd|async|await|spawn|lazy|static_if|compile_eval)\\b"
+        },
+        {
+          "name": "keyword.control.dri",
+          "match": "\\b(reduction)\\b"
+        }
+      ]
+    },
+
+    "keywords-type": {
+      "patterns": [
+        {
+          "name": "storage.type.dri",
+          "match": "\\b(int|long|float|double|char|String|boolean|void|var|auto|tensor|list|Map|Union|Option|Result|Own|Ref|Borrow|Self|arg)\\b"
+        },
+        {
+          "name": "storage.type.dri",
+          "match": "\\b(dim)\\b"
+        }
+      ]
+    },
+
+    "keywords-modifier": {
+      "patterns": [
+        {
+          "name": "storage.modifier.dri",
+          "match": "\\b(public|private|static|abstract|final|synchronized|const|unsigned|mut|override)\\b"
+        }
+      ]
+    },
+
+    "keywords-special": {
+      "patterns": [
+        {
+          "name": "variable.language.dri",
+          "match": "\\b(this|Self|null|None|true|false|new|move)\\b"
+        },
+        {
+          "name": "keyword.declaration.dri",
+          "match": "\\b(class|trait|impl|extends|for|module|use|extern|fn)\\b"
+        },
+        {
+          "name": "keyword.other.dri",
+          "match": "\\b(Some|Ok|Err|and|or|not|in|is|as)\\b"
+        }
+      ]
+    },
+
+    "builtins-namespace": {
+      "patterns": [
+        {
+          "name": "support.class.dri",
+          "match": "\\b(str|lst|map|math|io|sys|simd|mem|perf|bits|diff|reflect|wait)\\."
+        }
+      ]
+    },
+
+    "builtins-global": {
+      "patterns": [
+        {
+          "name": "support.function.builtin.dri",
+          "match": "\\b(print|input|length|split|abs|max|min|sqrt|floor|ceil|round|sin|cos|tan|fma|sum|mean|dot|norm|std|median|min_index|max_index|avx512_sum|avx512_dot|sort|reverse|range|toUpper|toLower|trim|replace|assert_that|likely|unlikely)(?=\\s*\\()"
+        }
+      ]
+    },
+
+    "numeric-literals": {
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.dri",
+          "match": "\\b0[xX][0-9a-fA-F]+\\b"
+        },
+        {
+          "name": "constant.numeric.binary.dri",
+          "match": "\\b0[bB][01]+\\b"
+        },
+        {
+          "name": "constant.numeric.float.dri",
+          "match": "\\b[0-9]+\\.[0-9]+([eE][+-]?[0-9]+)?\\b"
+        },
+        {
+          "name": "constant.numeric.integer.dri",
+          "match": "\\b[0-9]+[lL]?\\b"
+        }
+      ]
+    },
+
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.arithmetic.dri",
+          "match": "\\*\\*|//|\\+|-|\\*|/|%"
+        },
+        {
+          "name": "keyword.operator.comparison.dri",
+          "match": "==|!=|<=|>=|<|>"
+        },
+        {
+          "name": "keyword.operator.assignment.dri",
+          "match": "\\+=|-=|\\*=|/=|%=|="
+        },
+        {
+          "name": "keyword.operator.pipe.dri",
+          "match": "\\|>"
+        },
+        {
+          "name": "keyword.operator.arrow.dri",
+          "match": "->|=>"
+        },
+        {
+          "name": "keyword.operator.range.dri",
+          "match": "\\.\\."
+        },
+        {
+          "name": "keyword.operator.bitwise.dri",
+          "match": "<<|>>|&|\\|(?!>)|\\^|~"
+        }
+      ]
+    },
+
+    "function-definition": {
+      "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)\\s*(<[^>]*>)?\\s*(?=\\()",
+      "captures": {
+        "1": { "name": "entity.name.function.dri" }
+      }
+    },
+
+    "class-definition": {
+      "match": "\\b(class|trait|impl)\\s+([a-zA-Z_][a-zA-Z0-9_<>,\\s]*)",
+      "captures": {
+        "1": { "name": "keyword.declaration.dri" },
+        "2": { "name": "entity.name.type.dri" }
+      }
+    },
+
+    "trait-definition": {
+      "match": "\\b(impl)\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s+(for)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+      "captures": {
+        "1": { "name": "keyword.declaration.dri" },
+        "2": { "name": "entity.name.type.dri" },
+        "3": { "name": "keyword.other.dri" },
+        "4": { "name": "entity.name.type.dri" }
+      }
+    },
+
+    "function-call": {
+      "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)\\s*(?=\\()",
+      "captures": {
+        "1": { "name": "entity.name.function.call.dri" }
+      }
+    },
+
+    "identifiers": {
+      "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*\\b",
+      "name": "variable.other.dri"
+    }
+  }
+}
