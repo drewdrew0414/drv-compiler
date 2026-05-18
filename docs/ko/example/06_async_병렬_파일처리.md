@@ -1,4 +1,4 @@
-# 예제 6: async/await + spawn 병렬 파일 처리
+﻿# 예제 6: async/await + spawn 병렬 파일 처리
 
 > 대용량 로그 파일을 비동기적으로 읽고,
 > 병렬로 분석하며, spawn으로 백그라운드 작업을 처리한다.
@@ -17,7 +17,7 @@
 
 ## 코드
 
-```drv
+```dri
 module log_analyzer;
 
 # ── 1. 로그 레코드 구조 ──────────────────────────────────────
@@ -206,7 +206,7 @@ for (ts of lst.unique(timestamps)) { print(`  ${ts}`); }
 
 ## 비동기 패턴 요약
 
-```drv
+```dri
 # 비동기 함수 선언
 async ReturnType func_name(params) { ... }
 

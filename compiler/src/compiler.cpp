@@ -99,7 +99,7 @@ CompileResult Compiler::compile() {
             return result;
         }
 
-        // 3b. Module resolution: load referenced .drv files
+        // 3b. Module resolution: load referenced .dri files
         {
             namespace fs = std::filesystem;
             fs::path input_dir = fs::path(opts_.input_file).parent_path();
@@ -108,7 +108,7 @@ CompileResult Compiler::compile() {
                 auto* ud = dynamic_cast<const UseDecl*>(s.get());
                 if (!ud) continue;
                 for (auto& dir : include_dirs) {
-                    fs::path mod_path = fs::path(dir) / (ud->module + ".drv");
+                    fs::path mod_path = fs::path(dir) / (ud->module + ".dri");
                     if (!fs::exists(mod_path)) continue;
                     std::ifstream mf(mod_path);
                     if (!mf) continue;

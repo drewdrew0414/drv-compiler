@@ -6,9 +6,9 @@
 
 static void printUsage(const char* prog) {
     std::cerr
-        << "drv compiler — transpiles .drv source to C++17\n\n"
+        << "dri compiler — transpiles .dri source to C++17\n\n"
         << "Usage:\n"
-        << "  " << prog << " <input.drv> [options]\n\n"
+        << "  " << prog << " <input.dri> [options]\n\n"
         << "Options:\n"
         << "  --exe <file>     Build executable\n"
         << "  --cpp <file>     Output C++ source only\n"
@@ -34,7 +34,7 @@ int main(int argc, char* argv[]) {
         printUsage(argv[0]); return 0;
     }
     if (std::strcmp(argv[1], "--version") == 0) {
-        std::cout << "drv compiler v0.1.0 (spec: 2026-05, C++20 backend)\n";
+        std::cout << "dri compiler v0.1.0 (spec: 2026-05, C++20 backend)\n";
         return 0;
     }
 
@@ -68,13 +68,13 @@ int main(int argc, char* argv[]) {
         } else if (arg.size() > 2 && arg[0]=='-' && arg[1]=='D') {
             opts.defines.push_back(arg.substr(2));
         } else {
-            std::cerr << "drv: unknown option '" << arg << "'\n";
+            std::cerr << "dri: unknown option '" << arg << "'\n";
             return 1;
         }
     }
 
     if (opts.input_file.empty()) {
-        std::cerr << "drv: no input file\n";
+        std::cerr << "dri: no input file\n";
         return 1;
     }
 
@@ -88,7 +88,7 @@ int main(int argc, char* argv[]) {
     if (!result.success) return 1;
 
     if (opts.check_only)
-        std::cerr << "drv: " << opts.input_file << " — OK\n";
+        std::cerr << "dri: " << opts.input_file << " — OK\n";
 
     return 0;
 }

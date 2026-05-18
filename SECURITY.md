@@ -1,4 +1,4 @@
-# Security Policy
+﻿# Security Policy
 
 > Korean version: [docs/ko/SECURITY.md](docs/ko/SECURITY.md)
 
@@ -6,7 +6,7 @@
 
 ## Supported Versions
 
-drv is in early development (`v0.x`). Security fixes are applied to the latest release only.
+dri is in early development (`v0.x`). Security fixes are applied to the latest release only.
 
 | Version | Supported |
 |---------|-----------|
@@ -22,13 +22,13 @@ drv is in early development (`v0.x`). Security fixes are applied to the latest r
 ### Contact
 
 **Email**: `drew0414drew@gmail.com`  
-**Subject**: `[SECURITY] drv — <brief summary>`
+**Subject**: `[SECURITY] dri — <brief summary>`
 
 ### What to Include
 
 1. Vulnerability type (e.g. buffer overflow, path traversal, injection)
 2. Affected component (Lexer, Parser, codegen, runtime, CLI)
-3. Minimal reproducible example — `.drv` source or CLI command
+3. Minimal reproducible example — `.dri` source or CLI command
 4. Expected impact
 
 ---
@@ -48,7 +48,7 @@ drv is in early development (`v0.x`). Security fixes are applied to the latest r
 
 ### Compiler Safety
 
-The drv compiler accepts trusted `.drv` source files. Issues triggered by malicious input are treated as security vulnerabilities.
+The dri compiler accepts trusted `.dri` source files. Issues triggered by malicious input are treated as security vulnerabilities.
 
 Key areas:
 
@@ -59,7 +59,7 @@ Key areas:
 
 ### Generated Code Safety
 
-drv's ownership model provides compile-time memory safety guarantees:
+dri's ownership model provides compile-time memory safety guarantees:
 
 | Mechanism | Guarantee |
 |-----------|-----------|
@@ -81,9 +81,9 @@ drv's ownership model provides compile-time memory safety guarantees:
 
 ## Security-Relevant Annotations
 
-drv effect annotations make security-sensitive code explicit, aiding review:
+dri effect annotations make security-sensitive code explicit, aiding review:
 
-```drv
+```dri
 @threadsafe
 void safe_increment() { counter += 1; };
 

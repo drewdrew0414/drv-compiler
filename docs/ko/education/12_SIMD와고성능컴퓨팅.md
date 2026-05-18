@@ -1,4 +1,4 @@
-# SIMD와 고성능 컴퓨팅
+﻿# SIMD와 고성능 컴퓨팅
 > `simd for`, `tensor`, `simd.fmadd`, `math.invsqrt` 등으로 CPU 벡터 연산을 최대한 활용한다.
 
 ---
@@ -25,7 +25,7 @@ simd for (변수 in 시작..끝) { 본문 };
 SIMD 명령어를 자동 생성합니다.  
 x86-64: AVX2/AVX-512 | ARM: NEON
 
-```drv
+```dri
 int N = 1024;
 double[] x = new double[N];
 double[] y = new double[N];
@@ -38,7 +38,7 @@ simd for (i in 0..N) {
 
 `@noalias`로 앨리어싱 없음을 선언하면 더 적극적인 벡터화가 가능합니다:
 
-```drv
+```dri
 @noalias
 void vec_add(double[] a, double[] b, double[] c, int n) {
     simd for (i in 0..n) {
@@ -53,7 +53,7 @@ void vec_add(double[] a, double[] b, double[] c, int n) {
 
 `tensor<N, T>` — 정적 크기, SIMD 최적화된 배열
 
-```drv
+```dri
 tensor<8, double> v = {1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0};
 tensor<8, double> u = {2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0};
 
@@ -66,7 +66,7 @@ print(norm(v));     # 유클리드 노름 = sqrt(204)
 
 ## 수학 내장 함수 (직접 호출)
 
-```drv
+```dri
 tensor<5, double> data = {3.0, 1.0, 4.0, 1.0, 5.0};
 
 print(sum(data));          # 합계
@@ -96,7 +96,7 @@ print(norm(data));         # 노름
 
 `a * b + c`를 한 번의 SIMD 명령으로 계산합니다. 정밀도와 속도를 동시에 향상시킵니다.
 
-```drv
+```dri
 double result = simd.fmadd(3.0, 4.0, 5.0);   # 17.0
 
 # 고속 내적 계산
@@ -115,7 +115,7 @@ double dot_product(double[] a, double[] b, int n) {
 
 `1 / sqrt(x)` 고속 계산. 벡터 정규화에 유용합니다.
 
-```drv
+```dri
 double inv = math.invsqrt(16.0);   # 0.25
 
 void normalize(double[] v, int n) {
@@ -134,7 +134,7 @@ void normalize(double[] v, int n) {
 
 ## bits.popcount — 비트 개수
 
-```drv
+```dri
 int n = 0b10110101;
 int cnt = bits.popcount(n);   # 5
 
@@ -151,7 +151,7 @@ print(hamming(0b1010, 0b1100));   # 2
 
 다음에 사용할 데이터를 미리 캐시에 로딩해 캐시 미스를 줄입니다.
 
-```drv
+```dri
 double[] large = new double[1000000];
 
 for (i in 0..1000000) {
@@ -166,7 +166,7 @@ for (i in 0..1000000) {
 
 ## 고성능 I/O
 
-```drv
+```dri
 # 메모리 맵 파일 읽기 (복사 없이 직접 접근)
 var mapped = io.mmap_read("huge_dataset.bin");
 
@@ -178,7 +178,7 @@ var table = fast_csv_read("data.csv");
 
 ## 성능 측정
 
-```drv
+```dri
 double t0 = perf.now();
 
 simd for (i in 0..1000000) {
@@ -194,7 +194,7 @@ print("소요:", elapsed, "ms");
 
 ## 전체 예시 — 신호 처리
 
-```drv
+```dri
 int N = 8192;
 double[] signal = new double[N];
 double[] kernel = new double[N];

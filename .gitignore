@@ -143,3 +143,5 @@ stdlib/
 
 *.generated.cpp
 *.generated.h
+
+installer/install.txt

@@ -1,4 +1,4 @@
-# drv Language
+﻿# dri Language
 
 > **Learn like Python. Scale like C++.**
 
@@ -18,7 +18,7 @@
 
 ### Table of Contents
 
-- [What is drv?](#what-is-drv)
+- [What is dri?](#what-is-dri)
 - [Key Features](#key-features)
 - [Quick Start](#quick-start)
 - [Compilation](#compilation)
@@ -31,14 +31,14 @@
 
 ---
 
-### What is drv?
+### What is dri?
 
-drv is a modern HPC systems programming language that transpiles to C++17.  
+dri is a modern HPC systems programming language that transpiles to C++17.  
 It is designed for scientific computing, education, and high-performance applications.
 
-```drv
-# hello.drv
-print("Hello, drv!");
+```dri
+# hello.dri
+print("Hello, dri!");
 
 int x = 10;
 double pi = 3.14159;
@@ -66,8 +66,8 @@ for (i in 0..5) {
 
 ### Quick Start
 
-```drv
-# fib.drv
+```dri
+# fib.dri
 int fib(int n) {
     if (n <= 1) { return n; };
     return fib(n - 1) + fib(n - 2);
@@ -100,22 +100,22 @@ parallel for (f of files) {
 
 ### Compilation
 
-drv compiles to C++17 and links with clang or g++.
+dri compiles to C++17 and links with clang or g++.
 
 ```
-drv source  →  [drv compiler]  →  C++17  →  [clang/g++]  →  binary
+dri source  →  [dri compiler]  →  C++17  →  [clang/g++]  →  binary
 ```
 
 ```bash
-drv hello.drv --exe hello
+dri hello.dri --exe hello
 ./hello
 ```
 
 Build modes:
 
 ```bash
-drv main.drv --exe main --debug    # -O0, bounds checking on
-drv main.drv --exe main --release  # -O3, -march=native, LTO
+dri main.dri --exe main --debug    # -O0, bounds checking on
+dri main.dri --exe main --release  # -O3, -march=native, LTO
 ```
 
 ---
@@ -123,7 +123,7 @@ drv main.drv --exe main --release  # -O3, -march=native, LTO
 ### CLI Options
 
 ```
-drv <input.drv> [options]
+dri <input.dri> [options]
 ```
 
 | Option | Description |
@@ -141,11 +141,11 @@ drv <input.drv> [options]
 
 ### Language Overview
 
-```drv
+```dri
 # Types
 int x = 42;
 double pi = 3.14;
-String name = "drv";
+String name = "dri";
 var inferred = 100;        # type inferred as int
 
 # Ownership
@@ -232,7 +232,7 @@ MIT License — see [LICENSE](LICENSE).
 
 ### 목차
 
-- [drv란?](#drv란)
+- [dri란?](#dri란)
 - [핵심 특징](#핵심-특징)
 - [빠른 시작](#빠른-시작)
 - [컴파일](#컴파일)
@@ -245,14 +245,14 @@ MIT License — see [LICENSE](LICENSE).
 
 ---
 
-### drv란?
+### dri란?
 
-drv는 C++17로 트랜스파일되는 현대적 HPC 시스템 프로그래밍 언어입니다.  
+dri는 C++17로 트랜스파일되는 현대적 HPC 시스템 프로그래밍 언어입니다.  
 과학 계산, 교육, 고성능 애플리케이션을 위해 설계되었습니다.
 
-```drv
-# hello.drv
-print("안녕하세요, drv!");
+```dri
+# hello.dri
+print("안녕하세요, dri!");
 
 int x = 10;
 double pi = 3.14159;
@@ -280,8 +280,8 @@ for (i in 0..5) {
 
 ### 빠른 시작
 
-```drv
-# fib.drv
+```dri
+# fib.dri
 int fib(int n) {
     if (n <= 1) { return n; };
     return fib(n - 1) + fib(n - 2);
@@ -314,22 +314,22 @@ parallel for (f of files) {
 
 ### 컴파일
 
-drv는 C++17로 트랜스파일 후 clang 또는 g++로 빌드합니다.
+dri는 C++17로 트랜스파일 후 clang 또는 g++로 빌드합니다.
 
 ```
-drv 소스  →  [drv 컴파일러]  →  C++17  →  [clang/g++]  →  바이너리
+dri 소스  →  [dri 컴파일러]  →  C++17  →  [clang/g++]  →  바이너리
 ```
 
 ```bash
-drv hello.drv --exe hello
+dri hello.dri --exe hello
 ./hello
 ```
 
 빌드 모드:
 
 ```bash
-drv main.drv --exe main --debug    # -O0, 범위 검사 활성화
-drv main.drv --exe main --release  # -O3, -march=native, LTO
+dri main.dri --exe main --debug    # -O0, 범위 검사 활성화
+dri main.dri --exe main --release  # -O3, -march=native, LTO
 ```
 
 ---
@@ -337,7 +337,7 @@ drv main.drv --exe main --release  # -O3, -march=native, LTO
 ### CLI 옵션
 
 ```
-drv <입력.drv> [옵션]
+dri <입력.dri> [옵션]
 ```
 
 | 옵션 | 설명 |
@@ -355,11 +355,11 @@ drv <입력.drv> [옵션]
 
 ### 언어 개요
 
-```drv
+```dri
 # 타입
 int x = 42;
 double pi = 3.14;
-String name = "drv";
+String name = "dri";
 var inferred = 100;        # int로 추론 (지역 변수만)
 
 # 소유권
@@ -446,7 +446,7 @@ MIT License — [LICENSE](LICENSE) 참고.
 
 ### 目次
 
-- [drvとは](#drvとは)
+- [driとは](#driとは)
 - [主な特徴](#主な特徴)
 - [クイックスタート](#クイックスタート)
 - [コンパイル](#コンパイル)
@@ -459,14 +459,14 @@ MIT License — [LICENSE](LICENSE) 참고.
 
 ---
 
-### drvとは
+### driとは
 
-drvはC++17にトランスパイルされる現代的なHPCシステムプログラミング言語です。  
+driはC++17にトランスパイルされる現代的なHPCシステムプログラミング言語です。  
 科学計算・教育・高性能アプリケーション向けに設計されています。
 
-```drv
-# hello.drv
-print("こんにちは、drv!");
+```dri
+# hello.dri
+print("こんにちは、dri!");
 
 int x = 10;
 double pi = 3.14159;
@@ -494,8 +494,8 @@ for (i in 0..5) {
 
 ### クイックスタート
 
-```drv
-# fib.drv
+```dri
+# fib.dri
 int fib(int n) {
     if (n <= 1) { return n; };
     return fib(n - 1) + fib(n - 2);
@@ -528,22 +528,22 @@ parallel for (f of files) {
 
 ### コンパイル
 
-drvはC++17にトランスパイルし、clangまたはg++でビルドします。
+driはC++17にトランスパイルし、clangまたはg++でビルドします。
 
 ```
-drvソース  →  [drvコンパイラ]  →  C++17  →  [clang/g++]  →  バイナリ
+driソース  →  [driコンパイラ]  →  C++17  →  [clang/g++]  →  バイナリ
 ```
 
 ```bash
-drv hello.drv --exe hello
+dri hello.dri --exe hello
 ./hello
 ```
 
 ビルドモード:
 
 ```bash
-drv main.drv --exe main --debug    # -O0、境界チェック有効
-drv main.drv --exe main --release  # -O3、-march=native、LTO
+dri main.dri --exe main --debug    # -O0、境界チェック有効
+dri main.dri --exe main --release  # -O3、-march=native、LTO
 ```
 
 ---
@@ -551,7 +551,7 @@ drv main.drv --exe main --release  # -O3、-march=native、LTO
 ### CLIオプション
 
 ```
-drv <入力.drv> [オプション]
+dri <入力.dri> [オプション]
 ```
 
 | オプション | 説明 |
@@ -569,7 +569,7 @@ drv <入力.drv> [オプション]
 
 ### 言語概要
 
-```drv
+```dri
 # 型
 int x = 42;
 var inferred = 100;   # int として推論 (ローカル変数のみ)
@@ -656,7 +656,7 @@ MIT License — [LICENSE](LICENSE) を参照。
 
 ### 目录
 
-- [什么是drv](#什么是drv)
+- [什么是dri](#什么是dri)
 - [核心特性](#核心特性)
 - [快速开始](#快速开始)
 - [编译](#编译)
@@ -669,14 +669,14 @@ MIT License — [LICENSE](LICENSE) を参照。
 
 ---
 
-### 什么是drv
+### 什么是dri
 
-drv 是一门转译为 C++17 的现代 HPC 系统编程语言。  
+dri 是一门转译为 C++17 的现代 HPC 系统编程语言。  
 专为科学计算、教育和高性能应用而设计。
 
-```drv
-# hello.drv
-print("你好，drv!");
+```dri
+# hello.dri
+print("你好，dri!");
 
 int x = 10;
 double pi = 3.14159;
@@ -704,8 +704,8 @@ for (i in 0..5) {
 
 ### 快速开始
 
-```drv
-# fib.drv
+```dri
+# fib.dri
 int fib(int n) {
     if (n <= 1) { return n; };
     return fib(n - 1) + fib(n - 2);
@@ -738,22 +738,22 @@ parallel for (f of files) {
 
 ### 编译
 
-drv 转译为 C++17 后由 clang 或 g++ 构建。
+dri 转译为 C++17 后由 clang 或 g++ 构建。
 
 ```
-drv 源码  →  [drv 编译器]  →  C++17  →  [clang/g++]  →  二进制
+dri 源码  →  [dri 编译器]  →  C++17  →  [clang/g++]  →  二进制
 ```
 
 ```bash
-drv hello.drv --exe hello
+dri hello.dri --exe hello
 ./hello
 ```
 
 构建模式:
 
 ```bash
-drv main.drv --exe main --debug    # -O0，启用边界检查
-drv main.drv --exe main --release  # -O3，-march=native，LTO
+dri main.dri --exe main --debug    # -O0，启用边界检查
+dri main.dri --exe main --release  # -O3，-march=native，LTO
 ```
 
 ---
@@ -761,7 +761,7 @@ drv main.drv --exe main --release  # -O3，-march=native，LTO
 ### CLI选项
 
 ```
-drv <输入.drv> [选项]
+dri <输入.dri> [选项]
 ```
 
 | 选项 | 描述 |
@@ -779,7 +779,7 @@ drv <输入.drv> [选项]
 
 ### 语言概述
 
-```drv
+```dri
 # 类型
 int x = 42;
 var inferred = 100;   # 推断为 int（仅限局部变量）

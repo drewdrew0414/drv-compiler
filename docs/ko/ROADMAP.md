@@ -1,6 +1,6 @@
-# drv 로드맵
+﻿# dri 로드맵
 
-drv 컴파일러 및 언어 생태계의 개발 방향을 정리합니다.
+dri 컴파일러 및 언어 생태계의 개발 방향을 정리합니다.
 
 ---
 
@@ -27,7 +27,7 @@ drv 컴파일러 및 언어 생태계의 개발 방향을 정리합니다.
 
 ## v0.2 — 컴파일러 기반 구축
 
-**목표**: 기본 drv 프로그램을 C++17로 트랜스파일하고 실행
+**목표**: 기본 dri 프로그램을 C++17로 트랜스파일하고 실행
 
 ### 컴파일러 파이프라인
 
@@ -104,21 +104,21 @@ drv 컴파일러 및 언어 생태계의 개발 방향을 정리합니다.
 
 ## v0.6 — 외부 라이브러리 생태계
 
-**목표**: drv-pandas, drv-toulmin, drv-data, drv-plot 핵심 4종 라이브러리 구현
+**목표**: dri-pandas, dri-toulmin, dri-data, dri-plot 핵심 4종 라이브러리 구현
 
-- [ ] **drv-pandas** — 데이터프레임 파이프라인
+- [ ] **dri-pandas** — 데이터프레임 파이프라인
   - [ ] Apache Arrow / Rust Polars 코어 FFI 래핑
   - [ ] `.query()`, `.assign()`, `.groupby()`, `.mean()` 메서드 체이닝
   - [ ] `df.to_tensor()` 텐서 변환
-- [ ] **drv-toulmin** — 논증 룰 엔진 ([참조: park-jun-woo/toulmin](https://github.com/park-jun-woo/toulmin))
+- [ ] **dri-toulmin** — 논증 룰 엔진 ([참조: park-jun-woo/toulmin](https://github.com/park-jun-woo/toulmin))
   - [ ] 신뢰도 계산: $Acc(a) = \frac{w(a)}{1 + \sum Acc(attackers)}$
   - [ ] `toulmin.load_rules()` 바이너리 메타데이터 로드
   - [ ] `toulmin.build_audit()` 감사 추적 트리 생성
-- [ ] **drv-data** — 멀티 포맷 입출력
+- [ ] **dri-data** — 멀티 포맷 입출력
   - [ ] CSV, JSON, XML 고속 직렬화
   - [ ] DataFrame 테이블 → PNG 이미지 내보내기
   - [ ] 논증 트리 → PNG 이미지 내보내기
-- [ ] **drv-plot** — 데이터 시각화
+- [ ] **dri-plot** — 데이터 시각화
   - [ ] line, bar, scatter, heatmap 차트 엔진
   - [ ] `plot.dashboard()` 대시보드 구성
   - [ ] GUI 창(`show()`) 및 HTML/PNG 내보내기
@@ -127,7 +127,7 @@ drv 컴파일러 및 언어 생태계의 개발 방향을 정리합니다.
 
 ## v1.0 — 패키지 관리자 및 생태계
 
-**목표**: 실용적인 drv 생태계 완성
+**목표**: 실용적인 dri 생태계 완성
 
 - [ ] `drvpm` 패키지 관리자
   - [ ] `drvpm init` 프로젝트 초기화
@@ -137,7 +137,7 @@ drv 컴파일러 및 언어 생태계의 개발 방향을 정리합니다.
 - [ ] 표준 라이브러리 패키지 (`math`, `tensor`, `http`, `json`)
 - [ ] LLVM 백엔드 (C++ 트랜스파일 없이 직접 LLVM IR 생성)
 - [ ] LSP 서버 (IDE 자동완성·진단)
-- [ ] Playground (브라우저에서 drv 실행)
+- [ ] Playground (브라우저에서 dri 실행)
 
 ---
 
@@ -149,7 +149,7 @@ drv 컴파일러 및 언어 생태계의 개발 방향을 정리합니다.
 | 점진적 컴파일 | 변경된 파일만 재컴파일 |
 | WASM 타깃 | WebAssembly 출력 지원 |
 | GPU 커널 | CUDA/OpenCL 백엔드 |
-| 대화형 REPL | 즉석 drv 실행 환경 |
+| 대화형 REPL | 즉석 dri 실행 환경 |
 | 인터프리터 모드 | 스크립팅 용도 |
 
 ---

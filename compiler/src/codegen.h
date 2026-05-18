@@ -8,7 +8,7 @@
 namespace drv {
 
 struct CodegenOptions {
-    bool   emit_line_directives{true};  // #line N "file.drv"
+    bool   emit_line_directives{true};  // #line N "file.dri"
     bool   debug_build{false};
     bool   release_build{false};
     int    opt_level{1};

@@ -1,4 +1,4 @@
-# Contributing to drv
+# Contributing to dri
 
 drv is an open-source project targeting education and HPC systems programming.
 
@@ -23,25 +23,12 @@ git clone https://github.com/drewdrew0414/drv-compiler.git
 cd drv-compiler
 ```
 
-### Build
-
-```bash
-cmake -B build
-cmake --build build
-```
-
-### Test
-
-```bash
-cd build && ctest --output-on-failure
-```
-
 ---
 
 ## Project Structure
 
 ```
-drv-compiler/
+dri-compiler/
 ├── main.cpp              # Compiler entry point
 ├── compiler/
 │   └── src/              # Lexer, Parser, AST, Codegen
@@ -90,7 +77,7 @@ drv-compiler/
 ### Documentation
 
 - Korean education docs (`docs/ko/education/`) — 16 files, full spec
-- Example `.drv` programs
+- Example `.dri` programs
 
 ---
 
