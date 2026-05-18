@@ -5,6 +5,13 @@
 > https://github.com/drewdrew0414/dri-lang/releases/download/0.1.0/dri-install.exe
 ---
 
+## Powershell에서 실행할 경우 명령어는 아래와 같이 수정되어야합니다.
+```
+& dri "코드 파일 위치" --exe "실행 exe가 만들어질 자리"
+```
+
+---
+
 ## 🌐 Language / 언어 / 言語 / 语言
 
 **[English](#english)** | **[한국어](#한국어)** | **[日本語](#日本語)** | **[中文](#中文)**
