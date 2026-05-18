@@ -4,6 +4,7 @@
 #include <sstream>
 #include <iomanip>
 #include <stdexcept>
+#include <windows.h>
 
 namespace drv {
 
