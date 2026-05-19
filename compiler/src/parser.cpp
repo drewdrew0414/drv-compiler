@@ -699,7 +699,24 @@ StmtPtr Parser::parseExistsStmt() {
 }
 
 // ── expression parsing (recursive descent) ───────────────────────────────────
-ExprPtr Parser::parseExpr()       { return parsePipe(); }
+ExprPtr Parser::parseExpr() {
+    // Short-circuit on panic so every recursive caller returns nullptr
+    // immediately, enabling clean stack unwinding without null-derefs.
+    if (panic_) return nullptr;
+
+    if (++expr_depth_ > kMaxExprDepth) {
+        --expr_depth_;
+        // Set panic_ so all callers above us also return nullptr without
+        // attempting any further parsing of the malformed token stream.
+        panic_ = true;
+        error("expression nested too deeply (limit " +
+              std::to_string(kMaxExprDepth) + ")");
+        return nullptr;
+    }
+    auto result = parsePipe();
+    --expr_depth_;
+    return result;
+}
 
 ExprPtr Parser::parsePipe() {
     auto lhs = parseAssign();
@@ -801,6 +818,7 @@ ExprPtr Parser::parseUnary() {
 
 ExprPtr Parser::parsePostfix() {
     auto expr = parsePrimary();
+    if (!expr) return nullptr;  // propagate panic / error without null-deref
     while (true) {
         if (check(TK::Dot)) {
             advance();
@@ -915,7 +933,7 @@ ExprPtr Parser::parseLambda() {
 }
 
 ExprPtr Parser::parsePrimary() {
-    int line = peek().line, col = peek().col;
+    int line = peek().line;
     TK k = peek().kind;
 
     // await expr → UnaryExpr("await", expr)
@@ -959,7 +977,6 @@ ExprPtr Parser::parsePrimary() {
         std::vector<ExprPtr> parts;
         size_t p = 0;
         while (p <= raw.size()) {
-            size_t start = p;
             size_t found = raw.find("${", p);
             // Add the text segment before ${
             std::string seg = (found == std::string::npos) ? raw.substr(p) : raw.substr(p, found-p);
@@ -1067,7 +1084,19 @@ ExprPtr Parser::parsePrimary() {
     if (k == TK::LParen) {
         advance();
         auto e = parseExpr();
-        expect(TK::RParen,"expected ')'");
+        // If parseExpr() returned nullptr (panic or depth limit), skip to the
+        // matching ')' without trying to build an AST node.
+        if (!e) {
+            // skip remaining tokens up to the first unmatched ')'
+            int depth = 1;
+            while (!check(TK::Eof) && depth > 0) {
+                if      (check(TK::LParen)) { ++depth; advance(); }
+                else if (check(TK::RParen)) { --depth; if (depth >= 0) advance(); }
+                else    advance();
+            }
+            return nullptr;
+        }
+        expect(TK::RParen, "expected ')'");
         return e;
     }
 

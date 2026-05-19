@@ -20,6 +20,16 @@ private:
     std::string        file_;
     size_t             pos_{0};
     std::vector<std::string> errors_;
+    int  expr_depth_{0};  // recursion depth counter
+    bool panic_{false};   // set on fatal parse error; makes all expr parsers short-circuit
+    // Each parseExpr() call recurses through ~16 intermediate parse functions
+    // (parsePipe → … → parsePrimary) before calling parseExpr() again.
+    // Each such chain consumes ~2 KiB of stack.
+    // 100 × 16 × 2 KiB = 3.2 MiB — well within the 8 MiB default stack.
+    // Once the limit fires, panic_ is set so every subsequent parseExpr()
+    // returns nullptr immediately without touching the token stream, ensuring
+    // clean unwinding without null-deref or additional recursion.
+    static constexpr int kMaxExprDepth = 100;
 
     // ── Annotation scope stack ────────────────────────────────────────────────
     // Each entry holds annots active at that block depth.

@@ -64,13 +64,31 @@ private:
         for (auto& c : s) if (c == '\\') c = '/';
         return s;
     }
+    // Escape a string literal for safe embedding in a C/C++ double-quoted
+    // string (handles backslash, double-quote, and newline control chars).
+    static std::string escapeCppStr(const std::string& s) {
+        std::string out;
+        out.reserve(s.size());
+        for (char c : s) {
+            switch (c) {
+                case '\\': out += "\\\\"; break;
+                case '"':  out += "\\\""; break;
+                case '\n': out += "\\n";  break;
+                case '\r': out += "\\r";  break;
+                default:   out += c;      break;
+            }
+        }
+        return out;
+    }
     void lineDir(int dri_line) {
         if (dri_line <= 0) return;
-        if (opts_.emit_line_directives && !opts_.source_file.empty())
-            writeln("#line " + std::to_string(dri_line) + " \"" + toForwardSlash(opts_.source_file) + "\"");
-        // Track source map entry
+        if (opts_.emit_line_directives && !opts_.source_file.empty()) {
+            // Escape the path so that a filename containing '"' or '\'
+            // cannot corrupt the generated #line directive or inject code.
+            std::string safe = escapeCppStr(toForwardSlash(opts_.source_file));
+            writeln("#line " + std::to_string(dri_line) + " \"" + safe + "\"");
+        }
         if (!opts_.source_map_file.empty()) {
-            // Count newlines emitted so far to approximate cpp line
             auto s = out_.str();
             int cpp_line = (int)std::count(s.begin(), s.end(), '\n') + 1;
             source_map_.push_back({cpp_line, opts_.source_file, dri_line});

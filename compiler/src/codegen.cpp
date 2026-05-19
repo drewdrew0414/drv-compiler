@@ -9,6 +9,34 @@ namespace drv {
 
 Codegen::Codegen(CodegenOptions opts) : opts_(std::move(opts)) {}
 
+// ── Security helpers ──────────────────────────────────────────────────────────
+
+// Escape a string for safe embedding inside a JSON double-quoted value.
+static std::string escapeJson(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (unsigned char c : s) {
+        switch (c) {
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n";  break;
+            case '\r': out += "\\r";  break;
+            case '\t': out += "\\t";  break;
+            default:
+                if (c < 0x20) {
+                    // control characters: escape as \uXXXX
+                    char buf[8];
+                    std::snprintf(buf, sizeof(buf), "\\u%04x", (unsigned)c);
+                    out += buf;
+                } else {
+                    out += (char)c;
+                }
+                break;
+        }
+    }
+    return out;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Type mapping: drv → C++
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1178,23 +1206,6 @@ void Codegen::emitStaticIf(const StaticIfStmt& s) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers: classify top-level statements
 // ─────────────────────────────────────────────────────────────────────────────
-// Returns true if expr (or any sub-expr) is a lambda or pipe
-static bool exprHasLambda(const Expr* e) {
-    if (!e) return false;
-    if (dynamic_cast<const LambdaExpr*>(e)) return true;
-    if (auto p = dynamic_cast<const PipeExpr*>(e))
-        return exprHasLambda(p->left.get()) || exprHasLambda(p->right.get());
-    if (auto p = dynamic_cast<const BinaryExpr*>(e))
-        return exprHasLambda(p->left.get()) || exprHasLambda(p->right.get());
-    return false;
-}
-
-static bool varDeclNeedsEntry(const VarDecl& vd) {
-    if (vd.type.name == "var") return true;  // auto — needs entry scope
-    if (exprHasLambda(vd.init.get())) return true;
-    return false;
-}
-
 static bool isGlobalDecl(const Stmt& s) {
     return dynamic_cast<const FuncDecl*>(&s)   ||
            dynamic_cast<const ClassDecl*>(&s)  ||
@@ -1358,7 +1369,12 @@ std::string Codegen::emit(const Program& prog) {
     writeln("    return static_cast<int64_t>(f.tellg());");
     writeln("}");
     writeln("static bool __drv_io_delete_file(const std::string&p){return std::remove(p.c_str())==0;}");
-    writeln("static bool __drv_io_make_dir(const std::string&p){return std::system((\"mkdir -p \"+p).c_str())==0;}");
+    // Use std::filesystem::create_directories instead of std::system("mkdir -p …")
+    // to avoid shell injection when the path contains metacharacters.
+    writeln("static bool __drv_io_make_dir(const std::string&p){");
+    writeln("    std::error_code ec;");
+    writeln("    std::filesystem::create_directories(p,ec);");
+    writeln("    return !ec;}");
     writeln("static std::string __drv_io_mmap_read(const std::string&p){");
     writeln("    // mmap_read: fall back to read_file for portability");
     writeln("    return __drv_io_read_file(p);}");
@@ -1668,7 +1684,10 @@ std::string Codegen::emit(const Program& prog) {
         writeln("int main(int argc, char* argv[]) {");
         if (has_entry_stmts) writeln("    __drv_entry__();");
         if (!opts_.trace_file.empty())
-            writeln("    __drv_export_trace(\"" + toForwardSlash(opts_.trace_file) + "\");");
+            // escapeCppStr prevents a trace filename with '"' or '\' from
+            // corrupting the generated C++ string literal.
+            writeln("    __drv_export_trace(\"" +
+                    escapeCppStr(toForwardSlash(opts_.trace_file)) + "\");");
         writeln("    return 0;");
         writeln("}");
     }
@@ -1686,13 +1705,15 @@ std::string Codegen::emit(const Program& prog) {
 void Codegen::writeSourceMap() const {
     std::ofstream f(opts_.source_map_file);
     if (!f) return;
+    // All path strings are JSON-escaped so that filenames containing '"', '\'
+    // or control characters cannot produce malformed JSON output.
     f << "{\n  \"version\": 3,\n";
-    f << "  \"sourceFile\": \"" << opts_.source_file << "\",\n";
+    f << "  \"sourceFile\": \"" << escapeJson(opts_.source_file) << "\",\n";
     f << "  \"mappings\": [\n";
     for (size_t i = 0; i < source_map_.size(); ++i) {
         auto& e = source_map_[i];
         f << "    {\"cppLine\":" << e.cpp_line
-          << ",\"driFile\":\"" << e.dri_file << "\""
+          << ",\"driFile\":\"" << escapeJson(e.dri_file) << "\""
           << ",\"driLine\":" << e.dri_line << "}";
         if (i + 1 < source_map_.size()) f << ",";
         f << "\n";

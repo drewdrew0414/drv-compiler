@@ -1,4 +1,5 @@
 #include "incremental.h"
+#include <array>
 #include <chrono>
 #include <fstream>
 #include <sstream>
@@ -9,31 +10,34 @@ namespace drv {
 namespace fs = std::filesystem;
 
 // ── CRC32 (ISO 3309 / Ethernet polynomial) ───────────────────────────────────
-static uint32_t crc32_table[256];
-static bool     crc32_table_ready = false;
-
-static void buildCRC32Table() {
+// Pre-computed at namespace-init via an inline IIFE — thread-safe, no lazy
+// flag, no per-call branch.
+namespace {
+constexpr std::array<uint32_t, 256> kCRC32Table = []() {
+    std::array<uint32_t, 256> t{};
     for (uint32_t i = 0; i < 256; ++i) {
         uint32_t c = i;
         for (int k = 0; k < 8; ++k)
             c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
-        crc32_table[i] = c;
+        t[i] = c;
     }
-    crc32_table_ready = true;
+    return t;
+}();
 }
 
 uint32_t IncrementalCache::computeCRC32(const std::string& path) {
-    if (!crc32_table_ready) buildCRC32Table();
-
     std::ifstream f(path, std::ios::binary);
     if (!f) return 0;
 
     uint32_t crc = 0xFFFFFFFFu;
-    char buf[4096];
-    while (f.read(buf, sizeof(buf)) || f.gcount() > 0) {
-        auto n = (size_t)f.gcount();
+    // 64 KiB read buffer — fewer syscalls than the old 4 KiB on big sources.
+    static constexpr size_t kBufSize = 64 * 1024;
+    std::vector<char> buf(kBufSize);
+    while (f.read(buf.data(), kBufSize) || f.gcount() > 0) {
+        auto n = static_cast<size_t>(f.gcount());
+        const uint8_t* p = reinterpret_cast<const uint8_t*>(buf.data());
         for (size_t i = 0; i < n; ++i)
-            crc = crc32_table[(crc ^ (uint8_t)buf[i]) & 0xFF] ^ (crc >> 8);
+            crc = kCRC32Table[(crc ^ p[i]) & 0xFF] ^ (crc >> 8);
     }
     return crc ^ 0xFFFFFFFFu;
 }
@@ -58,6 +62,11 @@ IncrementalCache::IncrementalCache(const std::string& project_dir) {
 }
 
 // ── Load from disk ────────────────────────────────────────────────────────────
+// Format (per non-comment line): "<mtime_ns> <crc32> <path…>"
+//   - mtime and crc are leading fixed-width integers
+//   - path may contain spaces; consumed up to the line terminator
+// Older "<path> <mtime> <crc>" entries fail to parse and are silently dropped,
+// triggering one harmless rebuild on first use after upgrade.
 void IncrementalCache::load() {
     std::ifstream f(cache_file_);
     if (!f) return;
@@ -66,11 +75,14 @@ void IncrementalCache::load() {
     while (std::getline(f, line)) {
         if (line.empty() || line[0] == '#') continue;
         std::istringstream iss(line);
-        std::string path;
         uint64_t mtime;
         uint32_t crc;
-        if (iss >> path >> mtime >> crc)
-            entries_[path] = {mtime, crc};
+        if (!(iss >> mtime >> crc)) continue;
+        // skip one delimiting space, then take the rest as path
+        if (iss.peek() == ' ') iss.get();
+        std::string path;
+        std::getline(iss, path);
+        if (!path.empty()) entries_[path] = {mtime, crc};
     }
 }
 
@@ -79,8 +91,9 @@ void IncrementalCache::save() const {
     std::ofstream f(cache_file_);
     if (!f) return;
     f << "# dri incremental build cache — do not edit manually\n";
+    f << "# format: <mtime_ns> <crc32> <path>\n";
     for (auto& [path, entry] : entries_)
-        f << path << " " << entry.mtime_ns << " " << entry.crc32 << "\n";
+        f << entry.mtime_ns << ' ' << entry.crc32 << ' ' << path << '\n';
 }
 
 // ── Check if up-to-date ───────────────────────────────────────────────────────

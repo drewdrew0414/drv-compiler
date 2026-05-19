@@ -65,7 +65,17 @@ int main(int argc, char* argv[]) {
             opts.native = true;
             opts.lto = true;
         } else if (arg == "--opt" && i+1 < argc) {
-            opts.opt_level = std::stoi(argv[++i]);
+            try {
+                opts.opt_level = std::stoi(argv[++i]);
+            } catch (const std::exception&) {
+                std::cerr << "dri: --opt requires an integer 0-3 (got '"
+                          << argv[i] << "')\n";
+                return 1;
+            }
+            if (opts.opt_level < 0 || opts.opt_level > 3) {
+                std::cerr << "dri: --opt must be 0-3 (got " << opts.opt_level << ")\n";
+                return 1;
+            }
         } else if (arg == "--native") {
             opts.native = true;
         } else if (arg == "--lto") {

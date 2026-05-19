@@ -171,11 +171,22 @@ Token Lexer::lexString() {
     while (pos_ < src_.size() && src_[pos_] != '"') {
         if (src_[pos_] == '\\') {
             advance();
+            if (pos_ >= src_.size()) {
+                error("unterminated escape sequence in string literal");
+                break;
+            }
             char esc = advance();
             switch (esc) {
                 case 'n':  val += '\n'; break;
                 case 't':  val += '\t'; break;
+                case 'r':  val += '\r'; break;
+                case 'b':  val += '\b'; break;
+                case 'f':  val += '\f'; break;
+                case 'v':  val += '\v'; break;
+                case 'a':  val += '\a'; break;
+                case '0':  val += '\0'; break;
                 case '"':  val += '"';  break;
+                case '\'': val += '\''; break;
                 case '\\': val += '\\'; break;
                 default:   val += '\\'; val += esc; break;
             }
@@ -271,12 +282,14 @@ Token Lexer::lexOperator() {
 // ── main tokenize loop ───────────────────────────────────────────────────────
 std::vector<Token> Lexer::tokenize() {
     std::vector<Token> tokens;
+    // Heuristic: ~1 token per 4 source chars + EOF. Avoids realloc churn on
+    // large translation units.
+    tokens.reserve(src_.size() / 4 + 16);
 
     while (pos_ < src_.size()) {
         skipWhitespace();
         if (pos_ >= src_.size()) break;
 
-        int startLine = line_, startCol = col_;
         char c = advance();
 
         // single-line comment: #
