@@ -174,13 +174,45 @@ bool Compiler::invokeBackend(const std::string& cpp_path) {
 
     if (opts_.native && !is_cross) flags += "-march=native ";
     if (opts_.lto)                 flags += "-flto ";
-    // Each define is shell-quoted so its value cannot contain metacharacters
-    // that would escape the command string.  Only safe characters are allowed
-    // (validated in compile()); the q() wrapping is a defence-in-depth layer.
     for (auto& d : opts_.defines)  flags += q("-D" + d) + " ";
 
 #ifndef _WIN32
-    flags += "-fopenmp ";
+    // ── OpenMP availability probe ─────────────────────────────────────────
+    // Apple's Xcode clang++ does not ship the OpenMP runtime by default,
+    // so we compile a minimal test program before committing to -fopenmp.
+    // If the probe fails we fall back to single-threaded execution and print
+    // a hint about installing libomp (brew install libomp).
+    {
+        namespace fs = std::filesystem;
+        const std::string omp_src = (fs::temp_directory_path()
+                                     / "__drv_omp_probe__.cpp").string();
+        const std::string omp_out = (fs::temp_directory_path()
+                                     / "__drv_omp_probe__").string();
+        bool omp_ok = false;
+        {
+            std::ofstream tf(omp_src);
+            if (tf) tf << "#include <omp.h>\nint main(){return omp_get_max_threads();}\n";
+        }
+        if (std::filesystem::exists(omp_src)) {
+            std::string omp_cmd = q(cxx) + " -fopenmp " + q(omp_src)
+                                  + " -o " + q(omp_out)
+                                  + " >" + null_dev + " 2>&1";
+            omp_ok = (std::system(omp_cmd.c_str()) == 0);
+            std::remove(omp_src.c_str());
+            std::remove(omp_out.c_str());
+        }
+
+        if (omp_ok) {
+            flags += "-fopenmp ";
+        } else {
+            std::cerr << "dri: warning: OpenMP not available with " << cxx
+                      << " — parallel for loops will run single-threaded.\n"
+                      << "  macOS: brew install libomp  "
+                         "(then re-run with the Homebrew clang: "
+                         "brew install llvm)\n"
+                      << "  Linux: sudo apt-get install libomp-dev\n";
+        }
+    }
 #endif
 
     // q(cxx) prevents a user-supplied cross_cxx path containing spaces or

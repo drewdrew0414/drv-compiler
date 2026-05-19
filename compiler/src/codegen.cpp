@@ -1248,7 +1248,9 @@ std::string Codegen::emit(const Program& prog) {
     writeln("#include <cstdlib>");
     writeln("#include <cassert>");
     writeln("#include <atomic>");
+    writeln("#ifdef _WIN32");
     writeln("#include <windows.h>");
+    writeln("#endif");
     writeln("#ifndef M_PI");
     writeln("#define M_PI 3.14159265358979323846");
     writeln("#endif");
