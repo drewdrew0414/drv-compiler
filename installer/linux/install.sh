@@ -166,6 +166,54 @@ build_from_source() {
     return 1
 }
 
+# ── VS Code installation path detection ──────────────────────────────────────
+# Returns the bin/ directory inside the VS Code app bundle, or an empty string.
+find_vscode_bin() {
+    # 1. If 'code' is already on PATH, resolve it back to the bin dir
+    if command -v code >/dev/null 2>&1; then
+        local resolved
+        resolved="$(dirname "$(command -v code)")"
+        echo "${resolved}"
+        return 0
+    fi
+
+    if [[ "${OS_TYPE}" == "darwin" ]]; then
+        # 2a. macOS: use Spotlight (mdfind) to locate the app bundle
+        if command -v mdfind >/dev/null 2>&1; then
+            local app
+            app="$(mdfind "kMDItemCFBundleIdentifier == 'com.microsoft.VSCode'" \
+                   2>/dev/null | head -1)"
+            if [[ -n "${app}" && -d "${app}/Contents/Resources/app/bin" ]]; then
+                echo "${app}/Contents/Resources/app/bin"
+                return 0
+            fi
+        fi
+        # 2b. Fall back to the two most common fixed locations
+        local mac_candidates=(
+            "${HOME}/Applications/Visual Studio Code.app/Contents/Resources/app/bin"
+            "/Applications/Visual Studio Code.app/Contents/Resources/app/bin"
+        )
+        for c in "${mac_candidates[@]}"; do
+            if [[ -d "${c}" ]]; then echo "${c}"; return 0; fi
+        done
+    else
+        # 2c. Linux: check common install locations
+        local linux_candidates=(
+            "/usr/bin"
+            "/usr/share/code/bin"
+            "/usr/lib/code/bin"
+            "/snap/bin"
+            "${HOME}/.local/share/code/bin"
+        )
+        for c in "${linux_candidates[@]}"; do
+            if [[ -x "${c}/code" ]]; then echo "${c}"; return 0; fi
+        done
+    fi
+
+    # Not found
+    return 1
+}
+
 # Detect content type of a downloaded file — distinguish HTML 404 page from
 # real binary even when the server returned HTTP 200.
 looks_like_html() {
@@ -303,6 +351,9 @@ if [[ "${SKIP_VSCODE}" != "true" ]]; then
             printf '  \033[33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n'
             printf '\n'
 
+            # Try to locate VS Code on this machine right now
+            detected_bin="$(find_vscode_bin || true)"
+
             if [[ "${OS_TYPE}" == "darwin" ]]; then
                 printf '  \033[36m[macOS]\033[0m The "code" command is not on PATH yet.\n'
                 printf '  Due to macOS sandboxing, one-time setup is required.\n'
@@ -320,19 +371,43 @@ if [[ "${SKIP_VSCODE}" != "true" ]]; then
                 printf '     Quit the terminal app fully and reopen it.\n'
                 printf '\n'
                 printf '  \033[1m⚠  If the command stops working after a reboot:\033[0m\n'
-                printf '     Run these two commands once:\n'
-                printf '\n'
-                printf '     \033[32mecho '"'"'export PATH="$PATH:/Applications/Visual Studio Code.app/Contents/Resources/app/bin"'"'"' >> ~/.zshrc\033[0m\n'
-                printf '     \033[32msource ~/.zshrc\033[0m\n'
+                if [[ -n "${detected_bin}" ]]; then
+                    # Show the exact path found on this machine
+                    printf '     VS Code was found at: \033[32m%s\033[0m\n' "${detected_bin}"
+                    printf '     Run these two commands once:\n'
+                    printf '\n'
+                    printf '     \033[32mecho '"'"'export PATH="$PATH:%s"'"'"' >> ~/.zshrc\033[0m\n' \
+                           "${detected_bin}"
+                    printf '     \033[32msource ~/.zshrc\033[0m\n'
+                else
+                    # VS Code not found yet — give a generic dynamic snippet
+                    printf '     VS Code was not found at a standard location.\n'
+                    printf '     Once you install VS Code, run:\n'
+                    printf '\n'
+                    printf '     \033[32mVSC_BIN=$(mdfind "kMDItemCFBundleIdentifier == '"'"'com.microsoft.VSCode'"'"'" | head -1)\033[0m\n'
+                    printf '     \033[32mecho "export PATH=\\"\\$PATH:\\${VSC_BIN}/Contents/Resources/app/bin\\"" >> ~/.zshrc\033[0m\n'
+                    printf '     \033[32msource ~/.zshrc\033[0m\n'
+                fi
                 printf '\n'
             else
                 printf '  \033[36m[Linux]\033[0m Add the VS Code binary directory to PATH:\n'
                 printf '\n'
-                printf '     \033[32mecho '"'"'export PATH="$PATH:/usr/share/code/bin"'"'"' >> ~/.bashrc\033[0m\n'
-                printf '     \033[32msource ~/.bashrc\033[0m\n'
+                if [[ -n "${detected_bin}" ]]; then
+                    printf '     VS Code was found at: \033[32m%s\033[0m\n' "${detected_bin}"
+                    printf '\n'
+                    printf '     \033[32mecho '"'"'export PATH="$PATH:%s"'"'"' >> ~/.bashrc\033[0m\n' \
+                           "${detected_bin}"
+                    printf '     \033[32msource ~/.bashrc\033[0m\n'
+                else
+                    printf '     VS Code was not found at a standard location.\n'
+                    printf '     After installing VS Code, find its binary and run:\n'
+                    printf '\n'
+                    printf '     \033[32mecho "export PATH=\\"\\$PATH:\\$(dirname \\$(which code))\\"" >> ~/.bashrc\033[0m\n'
+                    printf '     \033[32msource ~/.bashrc\033[0m\n'
+                fi
                 printf '\n'
                 printf '  Alternatively, install VS Code via your package manager\n'
-                printf '  (snap / apt / rpm) and the "code" command is added automatically.\n'
+                printf '  (snap / apt / rpm) — the "code" command is added automatically.\n'
                 printf '\n'
             fi
 
