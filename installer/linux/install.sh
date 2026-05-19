@@ -295,9 +295,55 @@ if [[ "${SKIP_VSCODE}" != "true" ]]; then
 
         if [[ "${installed_ext}" == "false" ]]; then
             write_warn "No supported editor CLI found (code / cursor / codium)."
-            write_warn "Install the extension manually:"
-            write_warn "  code --install-extension ${vsix_path}"
             # Keep the VSIX on disk so the user can install it manually
+
+            printf '\n'
+            printf '  \033[33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n'
+            printf '  \033[33m  How to enable the VS Code "code" CLI\033[0m\n'
+            printf '  \033[33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n'
+            printf '\n'
+
+            if [[ "${OS_TYPE}" == "darwin" ]]; then
+                printf '  \033[36m[macOS]\033[0m The "code" command is not on PATH yet.\n'
+                printf '  Due to macOS sandboxing, one-time setup is required.\n'
+                printf '\n'
+                printf '  \033[1mStep 1 — Move VS Code to Applications\033[0m\n'
+                printf '     Drag "Visual Studio Code.app" from Downloads into\n'
+                printf '     /Applications, then launch it from there.\n'
+                printf '\n'
+                printf '  \033[1mStep 2 — Register the CLI (one-time)\033[0m\n'
+                printf '     Inside VS Code press  \033[32mCmd + Shift + P\033[0m\n'
+                printf '     Type  \033[32mshell command\033[0m  and select:\n'
+                printf '     \033[32mShell Command: Install '"'"'code'"'"' command in PATH\033[0m\n'
+                printf '\n'
+                printf '  \033[1mStep 3 — Restart your terminal\033[0m\n'
+                printf '     Quit the terminal app fully and reopen it.\n'
+                printf '\n'
+                printf '  \033[1m⚠  If the command stops working after a reboot:\033[0m\n'
+                printf '     Run these two commands once:\n'
+                printf '\n'
+                printf '     \033[32mecho '"'"'export PATH="$PATH:/Applications/Visual Studio Code.app/Contents/Resources/app/bin"'"'"' >> ~/.zshrc\033[0m\n'
+                printf '     \033[32msource ~/.zshrc\033[0m\n'
+                printf '\n'
+            else
+                printf '  \033[36m[Linux]\033[0m Add the VS Code binary directory to PATH:\n'
+                printf '\n'
+                printf '     \033[32mecho '"'"'export PATH="$PATH:/usr/share/code/bin"'"'"' >> ~/.bashrc\033[0m\n'
+                printf '     \033[32msource ~/.bashrc\033[0m\n'
+                printf '\n'
+                printf '  Alternatively, install VS Code via your package manager\n'
+                printf '  (snap / apt / rpm) and the "code" command is added automatically.\n'
+                printf '\n'
+            fi
+
+            printf '  \033[1mVerify the setup:\033[0m\n'
+            printf '     \033[32mcode --version\033[0m\n'
+            printf '\n'
+            printf '  \033[1mThen install the dri extension manually:\033[0m\n'
+            printf '     \033[32mcode --install-extension %s\033[0m\n' "${vsix_path}"
+            printf '\n'
+            printf '  \033[33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n'
+            printf '\n'
         fi
     else
         write_warn "Could not download the VSCode extension (skipping)."
