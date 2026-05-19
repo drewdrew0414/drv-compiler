@@ -249,9 +249,12 @@ for rc_file in "${SHELL_RC_FILES[@]}"; do
 done
 
 # ── VSCode extension (optional) ───────────────────────────────────────────────
+# VSIX URL: https://drvpm-registry.cloud/dist/v<VERSION>/dri-lang-<VERSION>.vsix
 if [[ "${SKIP_VSCODE}" != "true" ]]; then
     vsix_path="${INSTALL_DIR}/${VSIX_NAME}"
     vsix_url="${RELEASE_URL}/${VSIX_NAME}"
+
+    write_step "Downloading VSCode extension from ${vsix_url}…"
 
     vsix_ok=false
     if command -v curl >/dev/null 2>&1; then
@@ -268,14 +271,36 @@ if [[ "${SKIP_VSCODE}" != "true" ]]; then
 
     if [[ "${vsix_ok}" == "true" ]] && [[ -s "${vsix_path}" ]] && \
        ! looks_like_html "${vsix_path}"; then
-        if command -v code >/dev/null 2>&1; then
-            if code --install-extension "${vsix_path}" --force >/dev/null 2>&1; then
-                write_ok "VSCode extension installed."
-            else
-                write_warn "VSCode extension install failed."
+        write_ok "Extension downloaded: ${vsix_path}"
+
+        # Try every known VS Code–compatible CLI in priority order:
+        #   code           → Visual Studio Code (stable)
+        #   code-insiders  → VS Code Insiders
+        #   cursor         → Cursor IDE
+        #   codium         → VSCodium
+        installed_ext=false
+        for editor_cmd in code code-insiders cursor codium; do
+            if command -v "${editor_cmd}" >/dev/null 2>&1; then
+                write_step "Installing extension into ${editor_cmd}…"
+                if "${editor_cmd}" --install-extension "${vsix_path}" --force \
+                        >/dev/null 2>&1; then
+                    write_ok "Extension installed into ${editor_cmd}."
+                    installed_ext=true
+                    break
+                else
+                    write_warn "${editor_cmd} --install-extension failed."
+                fi
             fi
+        done
+
+        if [[ "${installed_ext}" == "false" ]]; then
+            write_warn "No supported editor CLI found (code / cursor / codium)."
+            write_warn "Install the extension manually:"
+            write_warn "  code --install-extension ${vsix_path}"
+            # Keep the VSIX on disk so the user can install it manually
         fi
     else
+        write_warn "Could not download the VSCode extension (skipping)."
         rm -f -- "${vsix_path}"
     fi
 fi
