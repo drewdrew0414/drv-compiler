@@ -84,7 +84,7 @@ void Compiler::writeCpp(const std::string& src) {
     if (!f) throw std::runtime_error("Write failed: " + path);
 }
 
-bool Compiler::invokeBackend(const std::string& cpp_path) {
+bool Compiler::invokeBackend(const std::string& cpp_path, std::string& captured_output) {
     if (opts_.output_exe.empty()) return true;
 
 #ifdef _WIN32
@@ -215,19 +215,30 @@ bool Compiler::invokeBackend(const std::string& cpp_path) {
     }
 #endif
 
-    // q(cxx) prevents a user-supplied cross_cxx path containing spaces or
-    // special characters from splitting into multiple shell tokens.
+    // Redirect compiler output to a temp file so the driver can format it.
+    const std::string out_file =
+        (fs::temp_directory_path() / "__drv_backend_out__").string();
+
     std::string cmd = q(cxx) + " " + flags + " " + q(cpp_path) +
                       " -o " + q(opts_.output_exe) +
 #ifndef _WIN32
                       " -lm "
 #endif
-                      " 2>&1";
+                      " >" + q(out_file) + " 2>&1";
     int ret = std::system(cmd.c_str());
+
+    // Read captured output (best-effort — ignore I/O failures here)
+    {
+        std::ifstream ofs(out_file, std::ios::binary);
+        if (ofs) captured_output.assign(
+            std::istreambuf_iterator<char>(ofs), {});
+    }
+    std::error_code rm_ec; fs::remove(out_file, rm_ec);
+
     if (ret != 0 && is_cross) {
-        std::cerr << "dri: cross-compilation failed for target '"
-                  << opts_.target_triple << "'\n"
-                  << "     Check that target sysroot is installed.\n";
+        captured_output += "\ndri: cross-compilation failed for target '"
+                        + opts_.target_triple + "'\n"
+                        + "     Check that target sysroot is installed.\n";
     }
     return ret == 0;
 }
@@ -237,31 +248,23 @@ CompileResult Compiler::compile() {
 
     try {
         // 0. Validate options
-        if (opts_.input_file.empty()) {
-            result.errors.push_back("dri: no input file");
-            return result;
-        }
-        if (opts_.opt_level < 0 || opts_.opt_level > 3) {
-            result.errors.push_back("dri: --opt level must be 0-3 (got " +
-                                    std::to_string(opts_.opt_level) + ")");
-            return result;
-        }
-        if (opts_.debug && opts_.release) {
-            result.errors.push_back("dri: --debug and --release are mutually exclusive");
-            return result;
-        }
-        // Validate --target triple: only [A-Za-z0-9._-] allowed so it cannot
-        // inject shell metacharacters into the backend command string.
+        auto optErr = [&](const std::string& msg) {
+            result.errors.push_back("dri: " + msg);
+            result.error_kind = ErrorKind::Options;
+        };
+
+        if (opts_.input_file.empty())         { optErr("no input file");                    return result; }
+        if (opts_.opt_level < 0 || opts_.opt_level > 3)
+                                              { optErr("--opt must be 0–3 (got "
+                                                + std::to_string(opts_.opt_level) + ")");   return result; }
+        if (opts_.debug && opts_.release)     { optErr("--debug and --release are mutually exclusive"); return result; }
         if (!opts_.target_triple.empty() && !isValidTargetTriple(opts_.target_triple)) {
-            result.errors.push_back("dri: --target contains invalid characters: '" +
-                                    opts_.target_triple + "'");
+            optErr("--target contains invalid characters: '" + opts_.target_triple + "'");
             return result;
         }
-        // Validate -D defines: reject values with shell metacharacters.
         for (auto& d : opts_.defines) {
             if (!isValidDefine(d)) {
-                result.errors.push_back("dri: -D define contains unsafe characters: '" +
-                                        d + "'");
+                optErr("-D define contains unsafe characters: '" + d + "'");
                 return result;
             }
         }
@@ -277,8 +280,10 @@ CompileResult Compiler::compile() {
         // 2. Lex
         Lexer lexer(src, opts_.input_file);
         auto tokens = lexer.tokenize();
+        for (auto& w : lexer.warnings()) result.warnings.push_back(w);
         if (lexer.hasErrors()) {
-            result.errors = lexer.errors();
+            result.errors      = lexer.errors();
+            result.error_kind  = ErrorKind::Lex;
             return result;
         }
 
@@ -286,7 +291,8 @@ CompileResult Compiler::compile() {
         Parser parser(std::move(tokens), opts_.input_file);
         auto program = parser.parse();
         if (parser.hasErrors()) {
-            result.errors = parser.errors();
+            result.errors     = parser.errors();
+            result.error_kind = ErrorKind::Parse;
             return result;
         }
 
@@ -338,6 +344,7 @@ CompileResult Compiler::compile() {
                 auto mtoks = ml.tokenize();
                 if (ml.hasErrors()) {
                     for (auto& e : ml.errors()) result.errors.push_back(e);
+                    result.error_kind = ErrorKind::Lex;
                     module_failed = true;
                     continue;
                 }
@@ -345,6 +352,7 @@ CompileResult Compiler::compile() {
                 auto mprog = mp.parse();
                 if (mp.hasErrors()) {
                     for (auto& e : mp.errors()) result.errors.push_back(e);
+                    result.error_kind = ErrorKind::Parse;
                     module_failed = true;
                     continue;
                 }
@@ -374,6 +382,7 @@ CompileResult Compiler::compile() {
             if (!ok) {
                 for (auto& e : analyzer.errors())
                     result.errors.push_back(e);
+                result.error_kind = ErrorKind::Analyze;
                 return result;
             }
         }
@@ -392,8 +401,12 @@ CompileResult Compiler::compile() {
             if (cache.isUpToDate(opts_.input_file, cpp_path)) {
                 // .cpp is up to date — skip transpile, just compile if needed
                 if (!opts_.output_exe.empty()) {
-                    bool ok = invokeBackend(cpp_path);
-                    if (!ok) { result.errors.push_back("backend compilation failed"); return result; }
+                    bool ok = invokeBackend(cpp_path, result.backend_output);
+                    if (!ok) {
+                        result.errors.push_back("backend compilation failed");
+                        result.error_kind = ErrorKind::Backend;
+                        return result;
+                    }
                 }
                 result.success = true;
                 return result;
@@ -416,7 +429,8 @@ CompileResult Compiler::compile() {
         result.warnings = cg.warnings();
 
         if (!cg.errors().empty()) {
-            result.errors = cg.errors();
+            result.errors     = cg.errors();
+            result.error_kind = ErrorKind::Codegen;
             return result;
         }
 
@@ -431,9 +445,10 @@ CompileResult Compiler::compile() {
 
         // 6. Invoke backend compiler (if --exe)
         if (!opts_.output_exe.empty()) {
-            bool ok = invokeBackend(cpp_path);
+            bool ok = invokeBackend(cpp_path, result.backend_output);
             if (!ok) {
                 result.errors.push_back("backend compilation failed");
+                result.error_kind = ErrorKind::Backend;
                 return result;
             }
         }
@@ -449,8 +464,23 @@ CompileResult Compiler::compile() {
 
         result.success = true;
 
+    } catch (const std::bad_alloc&) {
+        result.errors.push_back("dri: out of memory — source file may be too large");
+        result.error_kind = ErrorKind::Internal;
+    } catch (const std::filesystem::filesystem_error& ex) {
+        result.errors.push_back(std::string("dri: I/O error: ") + ex.what());
+        result.error_kind = ErrorKind::IO;
+    } catch (const std::runtime_error& ex) {
+        // Runtime errors are typically file-I/O failures surfaced by readSource()
+        // or writeCpp(); expose the message directly (it already has context).
+        result.errors.push_back(std::string("dri: ") + ex.what());
+        result.error_kind = ErrorKind::IO;
     } catch (const std::exception& ex) {
-        result.errors.push_back(std::string("fatal: ") + ex.what());
+        result.errors.push_back(std::string("dri: internal error: ") + ex.what());
+        result.error_kind = ErrorKind::Internal;
+    } catch (...) {
+        result.errors.push_back("dri: internal error: unknown exception");
+        result.error_kind = ErrorKind::Internal;
     }
 
     return result;

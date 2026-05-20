@@ -4,6 +4,7 @@
 #include <sstream>
 #include <iomanip>
 #include <stdexcept>
+#include <unordered_set>
 
 namespace drv {
 
@@ -59,7 +60,7 @@ std::string Codegen::mapBuiltinType(const std::string& name) {
     if (name=="Union")   return "std::variant";
     if (name=="Option")  return "std::optional";
     if (name=="Result")  return "DrvResult";
-    if (name=="Self")    return "auto";
+    if (name=="Self")    return self_type_override_.empty() ? "auto" : self_type_override_;
     if (name=="arg")     return "std::vector<std::string>";
     if (name=="atomic")  return "std::atomic";
     return name; // user-defined types pass through
@@ -253,6 +254,13 @@ std::string Codegen::mapBuiltinNamespace(const std::string& ns, const std::strin
     }
     // math.*
     if (ns=="math") {
+        if (fn=="sqrt")     return "std::sqrt(" + a(0) + ")";
+        if (fn=="cos")      return "std::cos(" + a(0) + ")";
+        if (fn=="sin")      return "std::sin(" + a(0) + ")";
+        if (fn=="tan")      return "std::tan(" + a(0) + ")";
+        if (fn=="floor")    return "std::floor(" + a(0) + ")";
+        if (fn=="ceil")     return "std::ceil(" + a(0) + ")";
+        if (fn=="round")    return "std::round(" + a(0) + ")";
         if (fn=="pow")      return "std::pow(" + a(0) + ", " + a(1) + ")";
         if (fn=="log")      return "std::log(" + a(0) + ")";
         if (fn=="log2")     return "std::log2(" + a(0) + ")";
@@ -283,6 +291,13 @@ std::string Codegen::mapBuiltinNamespace(const std::string& ns, const std::strin
         if (fn=="fma")      return "std::fma(" + a(0) + ", " + a(1) + ", " + a(2) + ")";
         if (fn=="abs")      return "std::abs(" + a(0) + ")";
         if (fn=="cbrt")     return "std::cbrt(" + a(0) + ")";
+        // Generic fallback: math.foo(args) → std::foo(args)
+        if (!fn.empty()) {
+            std::string call = "std::" + fn + "(";
+            for (size_t i = 0; i < args.size(); ++i) { if (i) call += ", "; call += a(i); }
+            call += ")";
+            return call;
+        }
     }
     // io.*
     if (ns=="io") {
@@ -306,6 +321,10 @@ std::string Codegen::mapBuiltinNamespace(const std::string& ns, const std::strin
         if (fn=="exit")             return "exit(" + a(0) + ")";
         if (fn=="sleep")            return "__drv_sys_sleep(" + a(0) + ")";
         if (fn=="time")             return "__drv_sys_time()";
+        // Memory barrier shortcuts (also accessible via sys.sync.*)
+        if (fn=="fence_full")    return "std::atomic_thread_fence(std::memory_order_seq_cst)";
+        if (fn=="fence_acquire") return "std::atomic_thread_fence(std::memory_order_acquire)";
+        if (fn=="fence_release") return "std::atomic_thread_fence(std::memory_order_release)";
     }
     // sys.topology.* — hardware topology-aware scheduling
     if (ns=="topology") {
@@ -391,7 +410,11 @@ std::string Codegen::emitExpr(const Expr& e) {
     if (auto p = dynamic_cast<const FloatLit*>(&e))  { std::ostringstream ss; ss << p->value << "f"; return ss.str(); }
     if (auto p = dynamic_cast<const BoolLit*>(&e))   return p->value ? "true" : "false";
     if (auto p = dynamic_cast<const CharLit*>(&e))   return std::string("'") + p->value + "'";
-    if (auto p = dynamic_cast<const StringLit*>(&e)) return "std::string(\"" + p->value + "\")";
+    if (auto p = dynamic_cast<const StringLit*>(&e))
+        // Re-escape the already-decoded string value so that control
+        // characters (actual \n, \t, \r, \", \\) produce valid C++ string
+        // literals.  The lexer decoded them; we must re-encode for output.
+        return "std::string(\"" + escapeCppStr(p->value) + "\")";
     if (dynamic_cast<const NullLit*>(&e))             return "nullptr";
     if (dynamic_cast<const NoneLit*>(&e))             return "std::nullopt";
 
@@ -430,8 +453,29 @@ std::string Codegen::emitBinary(const BinaryExpr& e) {
 std::string Codegen::emitUnary(const UnaryExpr& e) {
     std::string v = emitExpr(*e.operand);
     if (e.op=="not")   return "!" + v;
-    if (e.op=="await") return v + ".get()";  // std::future::get()
-    if (e.prefix)      return e.op + v;
+
+    if (e.op == "await") {
+        // Built-in namespace functions (io.*, sys.*, str.*, etc.) are
+        // synchronous and return their value directly — no .get() needed.
+        // User-defined async functions return std::future<T>, so they DO
+        // need .get() to block until the result is ready.
+        static const std::unordered_set<std::string> kSyncNS = {
+            "io", "sys", "math", "str", "lst", "map",
+            "net", "perf", "bits", "simd", "diff", "tensor"
+        };
+        bool is_sync_builtin = false;
+        if (auto* call = dynamic_cast<const CallExpr*>(e.operand.get())) {
+            if (auto* mem = dynamic_cast<const MemberExpr*>(call->callee.get())) {
+                if (auto* obj = dynamic_cast<const IdentExpr*>(mem->object.get())) {
+                    is_sync_builtin = kSyncNS.count(obj->name) > 0;
+                }
+            }
+        }
+        if (is_sync_builtin) return v;        // no .get() — already a plain value
+        return v + ".get()";                  // user async fn → std::future::get()
+    }
+
+    if (e.prefix) return e.op + v;
     return v + e.op;
 }
 
@@ -454,6 +498,12 @@ std::string Codegen::emitCall(const CallExpr& e) {
 
     // direct call
     if (auto id = dynamic_cast<const IdentExpr*>(e.callee.get())) {
+        // Inside a CRTP trait default method, calls to abstract methods must
+        // go through static_cast<__Self*>(this) so the derived impl is found.
+        if (in_trait_default_ && trait_abstract_names_.count(id->name)) {
+            return "(static_cast<__Self*>(this))->" + id->name
+                   + "(" + argsStr(e.args, this) + ")";
+        }
         return mapBuiltinCall(id->name, e.args);
     }
 
@@ -494,7 +544,7 @@ std::string Codegen::emitIndex(const IndexExpr& e) {
 }
 
 std::string Codegen::emitLambda(const LambdaExpr& e) {
-    std::string cap = "[=]"; // default capture
+    std::string cap = "[]"; // default: no capture (globals accessible without it)
     if (!e.captures.empty()) {
         cap = "[";
         for (size_t i=0; i<e.captures.size(); ++i) {
@@ -506,7 +556,11 @@ std::string Codegen::emitLambda(const LambdaExpr& e) {
     std::string params = "(";
     for (size_t i=0; i<e.params.size(); ++i) {
         if (i) params += ", ";
-        params += (e.params[i].type.empty() ? "auto" : e.params[i].type) + " " + e.params[i].name;
+        // Map dri type names (String, int, boolean…) to their C++ equivalents.
+        std::string ptype = e.params[i].type.empty()
+            ? "auto"
+            : mapBuiltinType(e.params[i].type);
+        params += ptype + " " + e.params[i].name;
     }
     params += ")";
 
@@ -532,10 +586,26 @@ std::string Codegen::emitNew(const NewExpr& e) {
 }
 
 std::string Codegen::emitPipe(const PipeExpr& e) {
-    // left |> right  →  right(left)  (if right is lambda or function)
+    // left |> right
+    // If right is a lambda: right(left)
+    // If right is a method call obj.fn(args): replace obj with left → left.fn(args)
+    // Otherwise: right(left)
     std::string l = emitExpr(*e.left);
     if (auto lam = dynamic_cast<const LambdaExpr*>(e.right.get())) {
         return emitLambda(*lam) + "(" + l + ")";
+    }
+    if (auto call = dynamic_cast<const CallExpr*>(e.right.get())) {
+        if (auto mem = dynamic_cast<const MemberExpr*>(call->callee.get())) {
+            // a |> b.method(args)  →  a.method(args)  (b is the pipe placeholder)
+            std::string fn = mem->field;
+            if (fn == "filter") return "__drv_lst_filter(" + l + ", " + argsStr(call->args, this) + ")";
+            if (fn == "map")    return "__drv_lst_map("    + l + ", " + argsStr(call->args, this) + ")";
+            if (fn == "reduce") {
+                auto a = [&](size_t i){ return i < call->args.size() ? emitExpr(*call->args[i]) : ""; };
+                return "__drv_lst_reduce(" + l + ", " + a(0) + ", " + a(1) + ")";
+            }
+            return l + "." + fn + "(" + argsStr(call->args, this) + ")";
+        }
     }
     return emitExpr(*e.right) + "(" + l + ")";
 }
@@ -782,6 +852,15 @@ void Codegen::emitFuncDecl(const FuncDecl& s) {
     writeil(sig + " {");
     ++indent_;
 
+    // Save smart_ptr_vars_ so local Own<T> variables don't leak into outer
+    // scopes or sibling functions (e.g., 'n' in insert_node vs for-each 'n').
+    auto saved_smart_ptr_vars = smart_ptr_vars_;
+    // Track Own<T>/Ref<T> parameters so member accesses use -> correctly.
+    for (auto& p : s.params) {
+        if (p.type.name == "Own") smart_ptr_vars_[p.name] = "own";
+        if (p.type.name == "Ref") smart_ptr_vars_[p.name] = "ref";
+    }
+
     if (is_bench) {
         writeil("double __drv_bench_start__ = __drv_perf_now();");
         writeil("struct __DrvBenchGuard__ {");
@@ -795,6 +874,7 @@ void Codegen::emitFuncDecl(const FuncDecl& s) {
     if (is_trace) { tracing_ = true; tracing_func_ = s.name; }
     for (auto& stmt : s.body) emitStmt(*stmt);
     tracing_ = prev_tracing; tracing_func_ = prev_func;
+    smart_ptr_vars_ = std::move(saved_smart_ptr_vars); // restore on exit
     --indent_;
     writeil("}");
     // Emit pragma suffix for scope annotations (@fast_math reset, etc.)
@@ -817,14 +897,34 @@ void Codegen::emitClassDecl(const ClassDecl& s) {
 
     if (is_packed) writeil("#pragma pack(push, 1)");
 
+    // Emit template<> header for generic classes
+    if (!s.type_params.empty()) {
+        std::string tmpl = "template<";
+        for (size_t i = 0; i < s.type_params.size(); ++i) {
+            if (i) tmpl += ", ";
+            tmpl += "typename " + s.type_params[i];
+        }
+        writeil(tmpl + ">");
+    }
+
     // Build base list: explicit extends + trait bases from impl blocks
+    std::string class_name = s.name;
+    if (!s.type_params.empty()) {
+        // For impl lookup we need the bare name, but the struct name is just s.name
+        // (the template parameters are on the template<> line above).
+    }
     std::string decl = align_attr + "struct " + s.name;
     std::vector<std::string> bases;
     if (!s.base.empty()) bases.push_back("public " + s.base);
     auto it = impls_by_class_.find(s.name);
     if (it != impls_by_class_.end()) {
-        for (auto* impl : it->second)
-            bases.push_back("public " + impl->trait_name);
+        for (auto* impl : it->second) {
+            // Use CRTP form for traits that were emitted as template<typename __Self>
+            std::string base_name = impl->trait_name;
+            if (crtp_traits_.count(base_name))
+                base_name += "<" + s.name + ">";
+            bases.push_back("public " + base_name);
+        }
     }
     if (!bases.empty()) {
         decl += " : ";
@@ -841,10 +941,14 @@ void Codegen::emitClassDecl(const ClassDecl& s) {
     }
 
     // Inject methods from impl blocks
+    // Override 'Self' → concrete class name so method signatures are correct.
     if (it != impls_by_class_.end()) {
+        std::string prev_self = self_type_override_;
+        self_type_override_ = s.name;
         for (auto* impl : it->second) {
             for (auto& m : impl->methods) emitStmt(*m);
         }
+        self_type_override_ = prev_self;
     }
 
     --indent_;
@@ -854,27 +958,37 @@ void Codegen::emitClassDecl(const ClassDecl& s) {
 }
 
 void Codegen::emitTraitDecl(const TraitDecl& s) {
+    // Collect abstract method names — we'll use CRTP to dispatch them to __Self.
+    trait_abstract_names_.clear();
+    for (auto& m : s.body) {
+        if (auto fn = dynamic_cast<const FuncDecl*>(m.get()))
+            if (fn->body.empty()) trait_abstract_names_.insert(fn->name);
+    }
+
+    if (!trait_abstract_names_.empty()) {
+        crtp_traits_.insert(s.name);
+        writeil("template<typename __Self>");
+    }
     writeil("struct " + s.name + " {");
     ++indent_;
+
+    // Set Self → __Self in type mapping and enable abstract-call dispatch.
+    std::string prev_override = self_type_override_;
+    bool prev_in_trait = in_trait_default_;
+    self_type_override_ = "__Self";
+    in_trait_default_   = !trait_abstract_names_.empty();
+
     for (auto& m : s.body) {
         if (auto fn = dynamic_cast<const FuncDecl*>(m.get())) {
-            if (fn->body.empty()) {
-                // abstract method — emit as pure virtual
-                std::string sig = "virtual " + mapType(fn->ret_type) + " " + fn->name + "(";
-                for (size_t i = 0; i < fn->params.size(); ++i) {
-                    if (i) sig += ", ";
-                    sig += mapType(fn->params[i].type) + " " + fn->params[i].name;
-                }
-                sig += ") = 0;";
-                writeil(sig);
-            } else {
-                // default implementation
-                emitStmt(*m);
-            }
-        } else {
-            emitStmt(*m);
+            if (fn->body.empty()) continue; // abstract — provided by impl
         }
+        emitStmt(*m);
     }
+
+    in_trait_default_   = prev_in_trait;
+    self_type_override_ = prev_override;
+    trait_abstract_names_.clear();
+
     writeil("virtual ~" + s.name + "() = default;");
     --indent_;
     writeil("};");
@@ -1023,7 +1137,8 @@ void Codegen::emitForRange(const ForRangeStmt& s) {
         writeil("#pragma omp simd");
     }
 
-    writei("for (auto " + s.var + " = " + from + "; " + s.var + " < " + to + "; ++" + s.var + ") ");
+    std::string increment = s.step ? s.var + " += " + emitExpr(*s.step) : "++" + s.var;
+    writei("for (auto " + s.var + " = " + from + "; " + s.var + " < " + to + "; " + increment + ") ");
     emitBlock(s.body);
     if (s.is_parallel && !opts_.trace_file.empty()) {
         writeil("__drv_trace_parallel_loop(__t0__, \"" + from + ".." + to + "\"); }");
@@ -1304,12 +1419,22 @@ std::string Codegen::emit(const Program& prog) {
 
     // ── drv runtime helpers ───────────────────────────────────────────────────
     writeln("// ── drv runtime ──────────────────────────────────────────────────");
+    // Recursive vector overload: list<list<T>> → "[elem, elem, ...]"
+    writeln("template<typename T> static std::string __drv_to_str(const std::vector<T>&);");
     writeln("template<typename T> static std::string __drv_to_str(const T& v) {");
     writeln("    if constexpr (std::is_same_v<T,bool>) return v ? \"true\" : \"false\";");
+    writeln("    else if constexpr (std::is_same_v<T,std::string>) return v;");
     writeln("    else if constexpr (requires { std::visit([](auto&&){},(v)); }) {");
     writeln("        std::string r; std::visit([&r](auto&& x){ r=__drv_to_str(x); }, v); return r;");
     writeln("    }");
     writeln("    else { std::ostringstream os; os << v; return os.str(); }");
+    writeln("}");
+    writeln("template<typename T> static std::string __drv_to_str(const std::vector<T>& v) {");
+    writeln("    std::string s = \"[\";");
+    writeln("    for (size_t __i=0; __i<v.size(); ++__i) {");
+    writeln("        if (__i) s += \", \"; s += __drv_to_str(v[__i]);");
+    writeln("    }");
+    writeln("    return s + \"]\";");
     writeln("}");
     writeln("static void __drv_print() { std::cout << '\\n'; }");
     writeln("template<typename A, typename... Rest>");
@@ -1654,27 +1779,65 @@ std::string Codegen::emit(const Program& prog) {
         }
     }
 
-    // ── Pass 1: global declarations only (func/class/trait/etc.) ────────────
+    // ── Pass 1: global declarations (func/class/trait/…) + VarDecl fwd decls ──
+    // Module-level VarDecls are forward-declared at file scope so that every
+    // function in the module can reference them.  Their initializers (if any)
+    // run in __drv_entry__() to preserve source-order evaluation.
     bool has_main = false;
     bool has_entry_stmts = false;
     for (auto& s : prog.stmts) {
         if (isGlobalDecl(*s)) {
             emitStmt(*s);
+        } else if (auto* vd = dynamic_cast<const VarDecl*>(s.get())) {
+            // Track smart-pointer kinds (needed before any function refers to it)
+            if (vd->type.name == "Own") smart_ptr_vars_[vd->name] = "own";
+            if (vd->type.name == "Ref") smart_ptr_vars_[vd->name] = "ref";
+            std::string prefix;
+            emitVarAnnotations(vd->annotations, prefix);
+            bool is_auto = (vd->type.name == "var" || vd->type.name == "auto");
+            if (is_auto && vd->init) {
+                // 'auto'/'var' with initializer: emit the full declaration at
+                // file scope (lambdas, std::function, etc. need the deduction).
+                writeil(prefix + "auto " + vd->name + " = " + emitExpr(*vd->init) + ";");
+            } else {
+                writeil(prefix + mapType(vd->type) + " " + vd->name + ";");
+                if (vd->init) has_entry_stmts = true;
+            }
         } else {
-            has_entry_stmts = true; // VarDecls + ExprStmts → entry
+            has_entry_stmts = true; // ExprStmts → entry
         }
         if (auto fn = dynamic_cast<const FuncDecl*>(s.get()))
             if (fn->name == "main") has_main = true;
     }
     writeln();
 
-    // ── Pass 2: everything else → __drv_entry__() ────────────────────────────
+    // ── Pass 2: VarDecl initializers + ExprStmts → __drv_entry__() ──────────
     if (has_entry_stmts) {
         writeln("static void __drv_entry__() {");
         ++indent_;
         for (auto& s : prog.stmts) {
             if (isGlobalDecl(*s)) continue;
-            emitStmt(*s);
+            if (auto* vd = dynamic_cast<const VarDecl*>(s.get())) {
+                if (!vd->init) continue; // already declared globally; no init needed
+                bool is_auto_t = (vd->type.name == "var" || vd->type.name == "auto");
+                if (is_auto_t) continue; // already emitted with full init at file scope
+                // Emit assignment only — variable is already declared at file scope
+                bool is_own = (vd->type.name == "Own");
+                bool is_ref = (vd->type.name == "Ref");
+                std::string rhs;
+                if (auto ne = dynamic_cast<const NewExpr*>(vd->init.get())) {
+                    std::string t = mapBuiltinType(ne->type_name);
+                    std::string args = argsStr(ne->ctor_args, this);
+                    if (is_own)      rhs = "std::make_unique<" + t + ">(" + args + ")";
+                    else if (is_ref) rhs = "std::make_shared<" + t + ">(" + args + ")";
+                    else             rhs = emitExpr(*vd->init);
+                } else {
+                    rhs = emitExpr(*vd->init);
+                }
+                writeil(vd->name + " = " + rhs + ";");
+            } else {
+                emitStmt(*s);
+            }
         }
         --indent_;
         writeln("}");

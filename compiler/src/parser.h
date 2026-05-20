@@ -20,6 +20,10 @@ private:
     std::string        file_;
     size_t             pos_{0};
     std::vector<std::string> errors_;
+    // Positions where GtGt was mutated to Gt for nested generic splitting.
+    // restorePos() undoes mutations at positions >= the saved pos so probes
+    // that backtrack leave the token stream in its original state.
+    std::vector<size_t> gt_splits_;
     int  expr_depth_{0};  // recursion depth counter
     bool panic_{false};   // set on fatal parse error; makes all expr parsers short-circuit
     // Each parseExpr() call recurses through ~16 intermediate parse functions
@@ -67,6 +71,8 @@ private:
     const Token& expect(TK k, const std::string& msg);
     void         skipSemi();
     void         sync();   // error recovery: skip to next ;
+    // Restore pos and undo any GtGt→Gt mutations made at positions >= saved.
+    void         restorePos(size_t saved);
 
     void error(const Token& t, const std::string& msg);
     void error(const std::string& msg) { error(peek(), msg); }

@@ -30,11 +30,27 @@ struct CompileOptions {
     std::string  source_map_file;     // --source-map <file.json>
 };
 
+// Describes which compilation phase produced the failure.
+// Used by the driver (main.cpp) to choose exit codes and format output.
+enum class ErrorKind {
+    None,       // no error (success)
+    Options,    // invalid CLI options
+    IO,         // file open/read/write failure
+    Lex,        // lexer error
+    Parse,      // parser error
+    Analyze,    // static analyzer error
+    Codegen,    // code-generation error
+    Backend,    // clang/g++ failed
+    Internal,   // unexpected exception
+};
+
 struct CompileResult {
     bool        success{false};
+    ErrorKind   error_kind{ErrorKind::None};
     std::string cpp_source;
     std::vector<std::string> errors;
     std::vector<std::string> warnings;
+    std::string backend_output;  // captured clang/g++ stderr output
 };
 
 class Compiler {
@@ -47,7 +63,7 @@ private:
 
     std::string readSource();
     void        writeCpp(const std::string& src);
-    bool        invokeBackend(const std::string& cpp_path);
+    bool        invokeBackend(const std::string& cpp_path, std::string& captured_output);
 };
 
 } // namespace drv

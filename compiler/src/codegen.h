@@ -3,6 +3,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace drv {
@@ -36,6 +37,10 @@ public:
     const std::vector<std::string>& warnings() const { return warnings_; }
     std::string getOutput() const { return out_.str(); }
 
+    // smart pointer variable tracking: var name → "own" or "ref"
+    // Kept public so argsStr() (friend free function) can auto-dereference.
+    std::unordered_map<std::string, std::string> smart_ptr_vars_;
+
 private:
     CodegenOptions opts_;
     std::ostringstream out_;
@@ -45,8 +50,11 @@ private:
 
     // impl-for pre-processing: class_name → list of ImplDecl*
     std::unordered_map<std::string, std::vector<const ImplDecl*>> impls_by_class_;
-    // smart pointer variable tracking: var name → "own" or "ref"
-    std::unordered_map<std::string, std::string> smart_ptr_vars_;
+    // Trait CRTP support
+    std::unordered_set<std::string> crtp_traits_;        // traits emitted as template<typename __Self>
+    std::unordered_set<std::string> trait_abstract_names_; // abstract methods of current trait
+    bool     in_trait_default_{false};  // inside a trait default-method body
+    std::string self_type_override_;    // replaces "Self" in mapType when non-empty
     // @trace state
     bool tracing_{false};
     std::string tracing_func_;

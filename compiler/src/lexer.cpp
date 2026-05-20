@@ -97,6 +97,16 @@ void Lexer::error(const std::string& msg) {
                       std::to_string(col_) + ": error: " + msg);
 }
 
+void Lexer::errorAt(int line, int col, const std::string& msg) {
+    errors_.push_back(file_ + ":" + std::to_string(line) + ":" +
+                      std::to_string(col) + ": error: " + msg);
+}
+
+void Lexer::warnAt(int line, int col, const std::string& msg) {
+    warnings_.push_back(file_ + ":" + std::to_string(line) + ":" +
+                        std::to_string(col) + ": warning: " + msg);
+}
+
 // ── whitespace / comments ────────────────────────────────────────────────────
 void Lexer::skipWhitespace() noexcept {
     while (pos_ < src_.size() && std::isspace((unsigned char)src_[pos_]))
@@ -159,8 +169,39 @@ Token Lexer::lexNumber() {
     std::string raw = src_.substr(start, pos_-start);
 
     // suffix
-    if (pos_ < src_.size() && src_[pos_] == 'L') { advance(); return Token{TK::LitLong,   raw+"L", startLine, startCol}; }
+    if (pos_ < src_.size() && src_[pos_] == 'L') {
+        advance();
+        // Validate long literal range (fits in int64_t)
+        try { std::stoll(raw); } catch (...) {
+            errorAt(startLine, startCol,
+                "integer literal '" + raw + "' is too large for type 'long' "
+                "(max 9223372036854775807)");
+        }
+        return Token{TK::LitLong, raw+"L", startLine, startCol};
+    }
     if (pos_ < src_.size() && src_[pos_] == 'f') { advance(); return Token{TK::LitFloat,  raw+"f", startLine, startCol}; }
+
+    if (!isFloat) {
+        // Validate integer range: must fit in int64_t at minimum; if too large, error.
+        bool fits = true;
+        try {
+            long long v = std::stoll(raw);
+            // Warn if it overflows int32_t but fits long (implicit widening)
+            if (v > 2147483647LL || v < -2147483648LL) {
+                warnAt(startLine, startCol,
+                    "integer literal " + raw + " overflows 'int' (max 2147483647); "
+                    "consider adding 'L' suffix for 'long'");
+            }
+        } catch (const std::out_of_range&) {
+            fits = false;
+            errorAt(startLine, startCol,
+                "integer literal '" + raw + "' is too large for any integer type "
+                "(max long value is 9223372036854775807); use a floating-point literal");
+        } catch (...) {
+            fits = false; // hex/binary — skip range check
+        }
+        (void)fits;
+    }
 
     return Token{isFloat ? TK::LitDouble : TK::LitInt, raw, startLine, startCol};
 }
@@ -169,10 +210,20 @@ Token Lexer::lexString() {
     int startLine = line_, startCol = col_;
     std::string val;
     while (pos_ < src_.size() && src_[pos_] != '"') {
+        if (src_[pos_] == '\n') {
+            // Newlines inside a string are only valid inside template strings.
+            // Report at the opening quote so the user knows where the string started.
+            errorAt(startLine, startCol,
+                "unterminated string literal (newline inside double-quoted string; "
+                "use a template string ` ` for multi-line content)");
+            return Token{TK::LitString, val, startLine, startCol};
+        }
         if (src_[pos_] == '\\') {
-            advance();
+            int escLine = line_, escCol = col_;
+            advance(); // consume backslash
             if (pos_ >= src_.size()) {
-                error("unterminated escape sequence in string literal");
+                errorAt(startLine, startCol,
+                    "unterminated string literal (EOF after '\\')");
                 break;
             }
             char esc = advance();
@@ -188,14 +239,32 @@ Token Lexer::lexString() {
                 case '"':  val += '"';  break;
                 case '\'': val += '\''; break;
                 case '\\': val += '\\'; break;
-                default:   val += '\\'; val += esc; break;
+                case 'u': case 'U': {
+                    // \uXXXX / \UXXXXXXXX — pass through for now, warn about partial support
+                    warnAt(escLine, escCol,
+                        std::string("\\") + esc + " Unicode escape is not fully validated; "
+                        "use UTF-8 bytes directly in the source file");
+                    val += '\\'; val += esc;
+                    break;
+                }
+                default:
+                    // Unknown escape: \q, \p, etc. — warn and pass through
+                    warnAt(escLine, escCol,
+                        std::string("unknown escape sequence '\\") + esc + "' — "
+                        "treating as literal backslash + '" + esc + "'");
+                    val += '\\'; val += esc;
+                    break;
             }
         } else {
             val += advance();
         }
     }
-    if (pos_ >= src_.size()) error("unterminated string literal");
-    else advance(); // closing "
+    if (pos_ >= src_.size()) {
+        errorAt(startLine, startCol,
+            "unterminated string literal (no closing '\"' before end of file)");
+    } else {
+        advance(); // closing "
+    }
     return Token{TK::LitString, val, startLine, startCol};
 }
 

@@ -33,12 +33,43 @@ bool Parser::match2(TK a, TK b) noexcept {
 }
 
 const Token& Parser::expect(TK k, const std::string& msg) {
-    if (!check(k)) { error(msg + " (got '" + peek().value + "')"); }
+    if (!check(k)) {
+        // Show the actual token value; for EOF use a readable placeholder.
+        std::string got = peek().kind == TK::Eof
+            ? "<end of file>"
+            : (peek().value.empty() ? std::string(tk_name(peek().kind)) : peek().value);
+        error(msg + " (got '" + got + "')");
+    }
     return advance();
 }
 
 void Parser::skipSemi() {
     while (check(TK::Semi)) advance();
+}
+
+// Convert a TypeRef back to its source-language string (e.g. "BST_Node<T>")
+static std::string typeRefToStr(const TypeRef& tr) {
+    std::string s = tr.name;
+    if (!tr.args.empty()) {
+        s += "<";
+        for (size_t i = 0; i < tr.args.size(); ++i) {
+            if (i) s += ", ";
+            s += typeRefToStr(tr.args[i]);
+        }
+        s += ">";
+    }
+    if (tr.is_array) s += "[]";
+    return s;
+}
+
+void Parser::restorePos(size_t saved) {
+    // Undo GtGt→Gt mutations made at positions >= saved, then restore pos.
+    while (!gt_splits_.empty() && gt_splits_.back() >= saved) {
+        size_t p = gt_splits_.back(); gt_splits_.pop_back();
+        toks_[p].kind  = TK::GtGt;
+        toks_[p].value = ">>";
+    }
+    pos_ = saved;
 }
 
 void Parser::error(const Token& t, const std::string& msg) {
@@ -100,11 +131,20 @@ TypeRef Parser::parseTypeRef() {
     // generic args: Foo<T, U>
     if (check(TK::Lt)) {
         advance();
-        while (!check(TK::Gt) && !check(TK::Eof)) {
+        while (!check(TK::Gt) && !check(TK::GtGt) && !check(TK::Eof)) {
             tr.args.push_back(parseTypeRef());
             if (!match(TK::Comma)) break;
         }
-        expect(TK::Gt, "expected '>' after generic type args");
+        if (check(TK::GtGt)) {
+            // Split '>>' for nested generic: Borrow<list<int>>.
+            // Record in gt_splits_ so restorePos() can undo on backtrack.
+            gt_splits_.push_back(pos_);
+            toks_[pos_].kind  = TK::Gt;
+            toks_[pos_].value = ">";
+            // Do NOT advance — leave this Gt for the outer parseTypeRef.
+        } else {
+            expect(TK::Gt, "expected '>' after generic type args");
+        }
     }
 
     // array suffix: int[]
@@ -151,7 +191,12 @@ StmtList Parser::parseBlock(std::vector<std::string> scope_annots) {
         if (!scope_only.empty()) pushAnnotScope(std::move(scope_only));
     }
     StmtList stmts;
-    while (!check(TK::RBrace) && !check(TK::Eof)) {
+    while (true) {
+        // Skip bare semicolons before re-evaluating the loop condition.
+        // Without this, a trailing ';' after '};' lands parseStmt() on '}',
+        // which causes an expression-parse failure instead of a clean exit.
+        skipSemi();
+        if (check(TK::RBrace) || check(TK::Eof)) break;
         try {
             stmts.push_back(parseStmt());
         } catch (...) { sync(); }
@@ -280,6 +325,25 @@ StmtPtr Parser::parseClassDecl(std::vector<std::string> mods) {
     n->line = peek().line;
     n->modifiers = mods;
     n->name = expect(TK::Ident, "expected class name").value;
+    // Generic type parameters: class Foo<T implements Bar, U> { ... }
+    if (check(TK::Lt)) {
+        advance();
+        while (!check(TK::Gt) && !check(TK::GtGt) && !check(TK::Eof)) {
+            n->type_params.push_back(advance().value);
+            if (check(TK::KwIn) || (check(TK::Ident) && peek().value == "implements")) {
+                advance();
+                n->trait_bounds.push_back(advance().value);
+                while (check(TK::Plus)) { advance(); n->trait_bounds.push_back(advance().value); }
+            }
+            if (!match(TK::Comma)) break;
+        }
+        if (check(TK::GtGt)) {
+            gt_splits_.push_back(pos_);
+            toks_[pos_].kind = TK::Gt; toks_[pos_].value = ">";
+        } else {
+            expect(TK::Gt, "expected '>'");
+        }
+    }
     if (match(TK::KwExtends)) {
         n->base = expect(TK::Ident, "expected base class name").value;
     }
@@ -454,7 +518,7 @@ StmtPtr Parser::parseStmt() {
                 TypeRef tr = parseTypeRef();
                 if (check(TK::Ident)) { looksLikeDecl = true; }
             } catch (...) {}
-            pos_ = saved;
+            restorePos(saved);
         }
     }
 
@@ -467,7 +531,7 @@ StmtPtr Parser::parseStmt() {
                 ? "" : peek().value;
             bool isFunc = (peek(1).kind == TK::LParen || peek(1).kind == TK::Lt);
             if (isFunc) {
-                pos_ = saved;
+                restorePos(saved);
                 auto fn = parseFuncDecl(mods, is_async);
                 fn->annotations = annots;
                 if (is_lazy) static_cast<FuncDecl*>(fn.get())->modifiers.push_back("lazy");
@@ -484,7 +548,7 @@ StmtPtr Parser::parseStmt() {
                 return vd;
             }
         }
-        pos_ = saved;
+        restorePos(saved);
     }
 
     // expression statement
@@ -530,10 +594,17 @@ StmtPtr Parser::parseForStmt(bool is_simd, bool is_parallel, std::vector<std::st
         if (check(TK::DotDot)) {
             advance();
             auto to = parseExpr();
+            // Optional step: for (i in 0..N step TILE)
+            ExprPtr step_expr;
+            if (check(TK::Ident) && peek().value == "step") {
+                advance(); // consume "step"
+                step_expr = parseExpr();
+            }
             expect(TK::RParen, "expected ')'");
             auto n = std::make_unique<ForRangeStmt>();
             n->line = from->line;
             n->var = var; n->from = std::move(from); n->to = std::move(to);
+            n->step = std::move(step_expr);
             n->is_simd = is_simd; n->is_parallel = is_parallel;
             n->reductions = reds;
             n->body = parseBlock();
@@ -1018,8 +1089,8 @@ ExprPtr Parser::parsePrimary() {
     if (k == TK::LitChar)   { auto n=std::make_unique<CharLit>();  n->line=line; n->value=advance().value[0]; return n; }
     if (k == TK::KwTrue)    { advance(); auto n=std::make_unique<BoolLit>(); n->line=line; n->value=true; return n; }
     if (k == TK::KwFalse)   { advance(); auto n=std::make_unique<BoolLit>(); n->line=line; n->value=false; return n; }
-    if (k == TK::KwNull||k==TK::KwNone) { advance(); return std::make_unique<NullLit>(); }
-    if (k == TK::KwNone)    { advance(); return std::make_unique<NoneLit>(); }
+    if (k == TK::KwNull) { advance(); return std::make_unique<NullLit>(); }
+    if (k == TK::KwNone) { advance(); return std::make_unique<NoneLit>(); }
 
     if (k == TK::KwSome) {
         advance(); expect(TK::LParen,"expected '('");
@@ -1040,7 +1111,9 @@ ExprPtr Parser::parsePrimary() {
     if (k == TK::KwNew) {
         advance();
         auto n = std::make_unique<NewExpr>(); n->line=line;
-        n->type_name = advance().value;
+        // Parse full generic type: new Foo<Bar<T>>() — use TypeRef then stringify
+        TypeRef tr = parseTypeRef();
+        n->type_name = typeRefToStr(tr);
         if (check(TK::LBracket)) {
             advance(); n->array_size = parseExpr(); expect(TK::RBracket,"expected ']'");
         } else if (check(TK::LParen)) {
@@ -1105,7 +1178,12 @@ ExprPtr Parser::parsePrimary() {
         auto n = std::make_unique<IdentExpr>(); n->line=line; n->name=advance().value; return n;
     }
 
-    error("unexpected token '" + peek().value + "'");
+    {
+        std::string tv = peek().kind == TK::Eof
+            ? "<end of file>"
+            : (peek().value.empty() ? std::string(tk_name(peek().kind)) : peek().value);
+        error("unexpected token '" + tv + "'");
+    }
     advance();
     auto dummy = std::make_unique<IntLit>(); dummy->value = 0; return dummy;
 }

@@ -142,7 +142,9 @@ struct FieldDecl { std::vector<std::string> modifiers; TypeRef type; std::vector
 struct ClassDecl : Stmt {
     std::vector<std::string> modifiers;
     std::string              name;
-    std::string              base;       // extends
+    std::string              base;            // extends
+    std::vector<std::string> type_params;     // generic <T, U>
+    std::vector<std::string> trait_bounds;    // T implements Foo
     std::vector<FieldDecl>   fields;
     std::vector<StmtPtr>     methods;
 };
@@ -200,7 +202,7 @@ struct IfStmt : Stmt {
 // for (i in 0..N) { } — range
 struct ForRangeStmt : Stmt {
     std::string var;
-    ExprPtr     from, to;
+    ExprPtr     from, to, step;   // step may be nullptr (default step=1)
     StmtList    body;
     bool        is_simd{false};
     bool        is_parallel{false};
