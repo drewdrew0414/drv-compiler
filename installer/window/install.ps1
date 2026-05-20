@@ -24,7 +24,7 @@ $ErrorActionPreference = "Stop"
 # ── Constants ───────────────────────────────────────────────────────────────
 $VERSION       = "0.1.0"
 $REGISTRY_URL  = "https://drvpm-registry.cloud"
-$RELEASE_URL   = "$REGISTRY_URL/dist/v$VERSION"
+$RELEASE_URL   = "$REGISTRY_URL/dist/v$VERSION/window"
 $COMPILER_NAME = "dri.exe"
 $VSIX_NAME     = "dri-lang-$VERSION.vsix"
 $REG_PATH      = "HKCU:\Software\dri-lang"
