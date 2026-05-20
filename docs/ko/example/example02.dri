@@ -26,7 +26,8 @@ class Body {
 }
 
 # 초기 조건: 구형 분포
-void init_sphere(list<Body> bodies) {
+# mut Borrow<list<Body>> → std::vector<Body>& (참조 전달 — 원본 수정)
+void init_sphere(mut Borrow<list<Body>> bodies) {
     for (i in 0..N_BODIES) {
         Body b;
         double angle = i * 6.28318 / N_BODIES;
@@ -44,7 +45,7 @@ void init_sphere(list<Body> bodies) {
 
 # 힘 계산 + 위치/속도 갱신 (Leapfrog)
 @bench
-void step(list<Body> bodies) {
+void step(mut Borrow<list<Body>> bodies) {
     # 속도 반 스텝 갱신
     parallel for (i in 0..N_BODIES) {
         double ax = 0.0;
@@ -84,7 +85,7 @@ void step(list<Body> bodies) {
 }
 
 # 총 에너지 계산 (운동에너지 + 퍼텐셜에너지)
-double total_energy(list<Body> bodies) {
+double total_energy(Borrow<list<Body>> bodies) {
     double ke = 0.0;
     double pe = 0.0;
 

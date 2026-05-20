@@ -187,9 +187,13 @@ class MinHeap<T implements Comparable> {
     }
 
     T pop() {
-        int n = lst.length(data);
         T result = data[0];
+        if (lst.length(data) == 1) {
+            lst.pop(data);
+            return result;
+        }
         data[0] = lst.pop(data);
+        int n = lst.length(data);   # post-pop size: data is now n elements
         int i = 0;
         while (true) {
             int l = 2 * i + 1;
