@@ -1,0 +1,252 @@
+module generic_collections;
+
+# ── 1. 기본 트레이트 정의 ─────────────────────────────────────
+
+trait Comparable {
+    int compare(Self other);      # -1, 0, 1 반환
+
+    boolean less_than(Self other) {
+        return compare(other) < 0;
+    }
+    boolean greater_than(Self other) {
+        return compare(other) > 0;
+    }
+    boolean equals(Self other) {
+        return compare(other) == 0;
+    }
+}
+
+trait Printable {
+    String to_string();
+
+    void print_self() {
+        print(to_string());
+    }
+}
+
+trait Hashable {
+    int hash();
+}
+
+# ── 2. 기본 타입에 트레이트 구현 ─────────────────────────────
+
+class IntWrapper {
+    int value;
+}
+
+impl Comparable for IntWrapper {
+    int compare(Self other) {
+        if (value < other.value) { return -1; }
+        if (value > other.value) { return 1; }
+        return 0;
+    }
+}
+
+impl Printable for IntWrapper {
+    String to_string() {
+        return str.from_int(value);
+    }
+}
+
+impl Hashable for IntWrapper {
+    int hash() {
+        return value * 2654435761;   # Knuth 곱셈 해시
+    }
+}
+
+class StringWrapper {
+    String value;
+}
+
+impl Comparable for StringWrapper {
+    int compare(Self other) {
+        if (value < other.value) { return -1; }
+        if (value > other.value) { return 1; }
+        return 0;
+    }
+}
+
+impl Printable for StringWrapper {
+    String to_string() {
+        return `"${value}"`;
+    }
+}
+
+# ── 3. 제네릭 정렬 (트레이트 바운드) ─────────────────────────
+
+# T가 Comparable을 구현해야 함
+void quicksort<T implements Comparable>(list<T> arr, int lo, int hi) {
+    if (lo >= hi) { return; }
+
+    T pivot = arr[(lo + hi) / 2];
+    int i = lo;
+    int j = hi;
+
+    while (i <= j) {
+        while (arr[i].less_than(pivot)) { i += 1; }
+        while (pivot.less_than(arr[j])) { j -= 1; }
+        if (i <= j) {
+            # swap
+            T tmp = arr[i];
+            arr[i] = arr[j];
+            arr[j] = tmp;
+            i += 1;
+            j -= 1;
+        }
+    }
+    quicksort(arr, lo, j);
+    quicksort(arr, i, hi);
+}
+
+# ── 4. 제네릭 최솟값/최댓값 ─────────────────────────────────
+
+T find_min<T implements Comparable>(list<T> arr) {
+    T result = arr[0];
+    for (i in 1..lst.length(arr)) {
+        if (arr[i].less_than(result)) {
+            result = arr[i];
+        }
+    }
+    return result;
+}
+
+T find_max<T implements Comparable>(list<T> arr) {
+    T result = arr[0];
+    for (i in 1..lst.length(arr)) {
+        if (arr[i].greater_than(result)) {
+            result = arr[i];
+        }
+    }
+    return result;
+}
+
+# ── 5. 제네릭 이진 탐색 트리 ─────────────────────────────────
+
+class BST_Node<T implements Comparable> {
+    T value;
+    Ref<BST_Node<T>> left;
+    Ref<BST_Node<T>> right;
+}
+
+class BST<T implements Comparable> {
+    Ref<BST_Node<T>> root;
+    int size;
+
+    void insert(T val) {
+        root = insert_node(root, val);
+        size += 1;
+    }
+
+    Ref<BST_Node<T>> insert_node(Ref<BST_Node<T>> node, T val) {
+        if (node == null) {
+            Ref<BST_Node<T>> n = new BST_Node<T>();
+            n.value = val;
+            return n;
+        }
+        if (val.less_than(node.value)) {
+            node.left = insert_node(node.left, val);
+        } else if (val.greater_than(node.value)) {
+            node.right = insert_node(node.right, val);
+        }
+        return node;
+    }
+
+    boolean contains(T val) {
+        Ref<BST_Node<T>> cur = root;
+        while (cur != null) {
+            if (val.equals(cur.value)) { return true; }
+            if (val.less_than(cur.value)) {
+                cur = cur.left;
+            } else {
+                cur = cur.right;
+            }
+        }
+        return false;
+    }
+}
+
+# ── 6. 우선순위 큐 (최소 힙) ─────────────────────────────────
+
+class MinHeap<T implements Comparable> {
+    list<T> data;
+
+    void push(T val) {
+        lst.push(data, val);
+        int i = lst.length(data) - 1;
+        while (i > 0) {
+            int parent = (i - 1) / 2;
+            if (data[i].less_than(data[parent])) {
+                T tmp = data[i];
+                data[i] = data[parent];
+                data[parent] = tmp;
+                i = parent;
+            } else {
+                break;
+            }
+        }
+    }
+
+    T pop() {
+        int n = lst.length(data);
+        T result = data[0];
+        data[0] = lst.pop(data);
+        int i = 0;
+        while (true) {
+            int l = 2 * i + 1;
+            int r = 2 * i + 2;
+            int smallest = i;
+            if (l < n and data[l].less_than(data[smallest])) { smallest = l; }
+            if (r < n and data[r].less_than(data[smallest])) { smallest = r; }
+            if (smallest == i) { break; }
+            T tmp = data[i];
+            data[i] = data[smallest];
+            data[smallest] = tmp;
+            i = smallest;
+        }
+        return result;
+    }
+
+    boolean is_empty() {
+        return lst.is_empty(data);
+    }
+}
+
+# ── 실행 테스트 ──────────────────────────────────────────────
+
+# 정렬 테스트
+list<IntWrapper> nums = [];
+for (v of [5, 3, 8, 1, 9, 2, 7, 4, 6]) {
+    IntWrapper w;
+    w.value = v;
+    lst.push(nums, w);
+}
+quicksort(nums, 0, lst.length(nums) - 1);
+print("정렬 결과:");
+for (n of nums) { n.print_self(); }
+
+# 최솟값/최댓값
+IntWrapper mn = find_min(nums);
+IntWrapper mx = find_max(nums);
+print(`최솟값: ${mn.value}, 최댓값: ${mx.value}`);
+
+# BST 테스트
+BST<IntWrapper> tree;
+tree.size = 0;
+for (v of [5, 3, 8, 1, 9]) {
+    IntWrapper w; w.value = v;
+    tree.insert(w);
+}
+IntWrapper search_val; search_val.value = 8;
+print(`8 포함?: ${tree.contains(search_val)}`);
+
+# 힙 정렬
+MinHeap<IntWrapper> heap;
+for (v of [5, 3, 8, 1, 9, 2]) {
+    IntWrapper w; w.value = v;
+    heap.push(w);
+}
+print("힙에서 순서대로 꺼내기:");
+while (!heap.is_empty()) {
+    IntWrapper out = heap.pop();
+    print(out.value);
+}

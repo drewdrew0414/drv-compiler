@@ -1,0 +1,254 @@
+module reorder_demo;
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 컴파일러 코드 재배치(Instruction Scheduling)의 핵심 이득 3가지
+# ① 파이프라인 스톨(Stall) 방지   — 의존성 체인 분리
+# ② 분기 예측(Branch Prediction)  — 정렬 데이터로 예측 성공률 극대화
+# ③ 루프 언롤링(Loop Unrolling)   — 반복 오버헤드 제거 + SIMD 자동 벡터화
+# ⚠ 메모리 장벽(Memory Barrier)   — 멀티스레드에서 재배치를 막는 방법
+# ═══════════════════════════════════════════════════════════════════════════════
+
+int SIZE = 1000000;   # 1M 원소 — 벤치마크가 의미 있을 만한 충분한 크기
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ① 파이프라인 스톨 방지
+#
+# 현대 CPU 파이프라인: Fetch → Decode → Execute → Writeback
+# 문제: result(i) = result(i-1) + data[i]  ← 직전 결과에 의존 → RAW 해저드 → Stall
+# 해법: 독립적인 누산기 4개를 사용 → CPU 슈퍼스칼라가 병렬 실행
+#
+# 의존성 그래프:
+#   비효율: s → s → s → s  (직렬 체인, 한 번에 1개씩)
+#   효율:   s0 → s0 → s0
+#           s1 → s1 → s1   (4개 독립 체인 → CPU 내부 4 ALU 동시 동작)
+#           s2 → s2 → s2
+#           s3 → s3 → s3
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 비효율: 단일 누산기 — 매 반복이 직전 결과에 의존 → RAW 해저드 → Stall
+@bench
+double sum_serial(double[] data) {
+    double result = 0.0;
+    for (i in 0..lst.length(data)) {
+        result = result + data[i];   # result(i)가 result(i-1)을 기다림 → 스톨
+    }
+    return result;
+}
+
+# 효율: 4-way 독립 누산기 — 서로 의존성이 없어 CPU가 병렬 실행
+# s0·s1·s2·s3 은 완전히 독립: 파이프라인이 4개를 동시에 실행(Out-of-Order)
+@bench
+double sum_4accum(double[] data) {
+    double s0 = 0.0; double s1 = 0.0;
+    double s2 = 0.0; double s3 = 0.0;
+    int n  = lst.length(data);
+    int n4 = n - (n % 4);
+    for (i in 0..n4 step 4) {
+        s0 = s0 + data[i];
+        s1 = s1 + data[i + 1];
+        s2 = s2 + data[i + 2];
+        s3 = s3 + data[i + 3];
+    }
+    double tail = 0.0;
+    for (i in n4..n) { tail = tail + data[i]; }
+    return (s0 + s1) + (s2 + s3) + tail;
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ② 분기 예측(Branch Prediction) 최적화
+#
+# CPU는 if-else/for 분기를 미리 예측해 파이프라인을 미리 채움(Speculative Exec)
+# 예측 실패 → 파이프라인 전체 flush(보통 15~20 사이클 손실)
+#
+# 비정렬: -500 ~ +499 이 무작위 → True/False가 뒤섞임 → 예측 성공률 ≈ 50%
+# 정렬:   음수 전체가 앞, 양수 전체가 뒤 → 분기 전환이 딱 1번 → 예측 성공률 ≈ 100%
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 비효율: 무작위 배열 — 분기가 랜덤하게 True/False → 파이프라인 flush 빈발
+@bench
+int count_positive_unsorted(int[] data) {
+    int cnt = 0;
+    for (i in 0..lst.length(data)) {
+        if (data[i] > 0) { cnt = cnt + 1; }   # 랜덤 → 예측 미스 ≈ 50%
+    }
+    return cnt;
+}
+
+# 효율: 정렬된 배열 — [음수...음수 | 양수...양수] 구조
+# CPU 분기 예측기가 패턴을 학습: "계속 False이다가 어느 순간 계속 True"
+@bench
+int count_positive_sorted(int[] data) {
+    int cnt = 0;
+    for (i in 0..lst.length(data)) {
+        if (data[i] > 0) { cnt = cnt + 1; }   # 정렬 → 예측 성공률 ≈ 100%
+    }
+    return cnt;
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ③ 루프 언롤링(Loop Unrolling) & SIMD 자동 벡터화
+#
+# 일반 루프 오버헤드 (매 반복):
+#   (1) i < n  조건 검사          — 비교 명령어 1개
+#   (2) ++i    카운터 증가         — 덧셈 명령어 1개
+#   (3) if(false) goto start      — 분기 명령어 1개
+# → 원하는 연산(arr[i]=0.0) 1개에 오버헤드 3개: 처리량의 75%가 루프 제어
+#
+# SIMD(AVX-512): 한 번에 8개 double(512비트) 처리 → 같은 시간에 8배 처리량
+# 수동 언롤(4×): 루프 제어 오버헤드를 1/4로 줄임 + 파이프라인이 4 store 겹침
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 비효율: 일반 루프 — 매 반복 (검사 + 증가 + 분기) 3개 오버헤드
+# mut Borrow<double[]> → std::vector<double>& (참조 전달, 원본 수정)
+@bench
+void zero_normal(mut Borrow<double[]> arr) {
+    int n = lst.length(arr);
+    for (i in 0..n) {
+        arr[i] = 0.0;   # 오버헤드 3 : 실작업 1 = 비율 3:1
+    }
+}
+
+# 효율 A: simd for — 컴파일러에 "이 루프를 SIMD 벡터 명령어로 바꿔도 안전" 힌트
+# clang/gcc 가 AVX2/AVX-512 명령어로 자동 변환 → 1 명령어로 4~8개 원소 처리
+@bench
+void zero_simd(mut Borrow<double[]> arr) {
+    int n = lst.length(arr);
+    simd for (i in 0..n) {
+        arr[i] = 0.0;   # SIMD: 한 명령어로 8 double(AVX-512) 동시 처리
+    }
+}
+
+# 효율 B: 수동 4-언롤 — 루프 제어 횟수를 1/4로 줄이고
+# CPU가 4개 store를 파이프라인 안에서 겹쳐 실행할 수 있도록 노출
+@bench
+void zero_unrolled(mut Borrow<double[]> arr) {
+    int n  = lst.length(arr);
+    int n4 = n - (n % 4);
+    for (i in 0..n4 step 4) {         # 루프 제어 오버헤드가 1/4
+        arr[i]     = 0.0;
+        arr[i + 1] = 0.0;
+        arr[i + 2] = 0.0;
+        arr[i + 3] = 0.0;
+    }
+    for (i in n4..n) { arr[i] = 0.0; }   # 나머지 원소 처리
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ⚠ 메모리 장벽(Memory Barrier / Fence)
+#
+# 컴파일러 재배치 전제: "싱글 스레드 관점에서 결과가 같으면 순서를 바꿔도 된다"
+# (C++ As-if rule)
+#
+# 문제 시나리오 (멀티스레드):
+#   Thread A (생산자):             Thread B (소비자):
+#   data[0] = 42;                  while (flag == 0) {}  // 대기
+#   flag    = 1;  ← 컴파일러가    value = data[0];      // 42를 기대
+#   ↑ 이 두 줄의 순서를 바꿀 수 있음!                   // 하지만 0일 수도 있음!
+#
+# 해법: fence_full() — "이 선 앞뒤의 메모리 연산 순서를 절대 바꾸지 마라"
+#   → 하드웨어 메모리 장벽(mfence / dmb ish) 명령어 삽입
+#   → 컴파일러 재배치 금지 + CPU 비순차 실행(OoO) 장벽
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 위험한 패턴 (싱글스레드 데모 — 실제 멀티스레드에서는 Data Race 발생 가능):
+void unsafe_producer(mut Borrow<int[]> data) {
+    data[0] = 42;    # 컴파일러가 이 두 줄의
+    data[1] = 1;     # 순서를 바꿀 수 있음 → 소비자가 완료 전에 값을 읽을 수 있음
+}
+
+# 안전한 패턴: fence_full()로 재배치 금지
+void safe_producer(mut Borrow<int[]> data) {
+    data[0] = 42;        # ① 데이터 먼저 기록
+    sys.fence_full();    # ② 장벽: ①이 반드시 ③보다 먼저 완료됨을 보장
+    data[1] = 1;         # ③ "완료" 신호 설정 (다른 스레드가 감시)
+}
+
+void safe_consumer(mut Borrow<int[]> data) {
+    while (data[1] == 0) { pass; }   # ① 완료 신호 대기 (싱글스레드에서는 즉시 통과)
+    sys.fence_acquire();             # ② 획득 장벽: ③이 반드시 ① 이후에 실행
+    int value = data[0];             # ③ 반드시 42가 읽힘 (재배치로 인한 오염 없음)
+    print(`소비자가 읽은 값: ${value}  (기대값: 42, 일치: ${value == 42})`);
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ─── 실행 및 검증 ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+
+print("══════════════════════════════════════════════════════");
+print("① 파이프라인 스톨 방지: 단일 누산기 vs 4-way 독립 누산기");
+print("══════════════════════════════════════════════════════");
+double[] nums = lst.fill(SIZE, 1.0);
+double r_serial = sum_serial(nums);
+double r_4accum = sum_4accum(nums);
+print(`  serial  결과: ${r_serial}`);
+print(`  4-accum 결과: ${r_4accum}`);
+print(`  결과 일치: ${abs(r_serial - r_4accum) < 1.0}`);
+print(`  * 두 버전 모두 합산값은 동일 — 속도만 다름`);
+print(`  * 4-accum은 CPU 내부 4개 ALU를 동시 활용 → 대기(Stall) 제거`);
+
+print("");
+print("══════════════════════════════════════════════════════");
+print("② 분기 예측 최적화: 무작위 배열 vs 정렬된 배열");
+print("══════════════════════════════════════════════════════");
+int HALF = 1000;
+int[] raw_data = [];
+for (i in 0..HALF) {
+    lst.push(raw_data, i - (HALF / 2));   # -500 ~ +499 순차 생성
+}
+# 비정렬: 홀수 인덱스는 음수, 짝수는 양수로 섞어서 예측하기 어렵게
+int[] unsorted_arr = [];
+int[] sorted_arr   = [];
+for (i in 0..HALF) {
+    int v = 0;
+    if (i % 2 == 0) { v = i / 2; }          # 짝수 인덱스 → 양수
+    else            { v = -(i / 2) - 1; }    # 홀수 인덱스 → 음수  (양수·음수 교차)
+    lst.push(unsorted_arr, v);
+}
+for (v of unsorted_arr) { lst.push(sorted_arr, v); }
+sorted_arr = lst.sort(sorted_arr);
+
+int cnt_u = count_positive_unsorted(unsorted_arr);
+int cnt_s = count_positive_sorted(sorted_arr);
+print(`  비정렬 양수 개수: ${cnt_u}`);
+print(`  정렬   양수 개수: ${cnt_s}`);
+print(`  결과 일치: ${cnt_u == cnt_s}`);
+print(`  * 비정렬: True/False 교차 → CPU 예측 실패 ~50% → flush 빈발`);
+print(`  * 정렬:   [음수 블록 | 양수 블록] → 전환 1번 → 예측 성공 ~100%`);
+
+print("");
+print("══════════════════════════════════════════════════════");
+print("③ 루프 언롤링 & SIMD: normal vs simd vs 4-unroll");
+print("══════════════════════════════════════════════════════");
+double[] arr1 = lst.fill(SIZE, 9.9);
+double[] arr2 = lst.fill(SIZE, 9.9);
+double[] arr3 = lst.fill(SIZE, 9.9);
+
+zero_normal(arr1);
+zero_simd(arr2);
+zero_unrolled(arr3);
+
+print(`  normal   [0]=${arr1[0]}, [last]=${arr1[SIZE-1]}, 정확: ${arr1[0] == 0.0}`);
+print(`  simd     [0]=${arr2[0]}, [last]=${arr2[SIZE-1]}, 정확: ${arr2[0] == 0.0}`);
+print(`  unrolled [0]=${arr3[0]}, [last]=${arr3[SIZE-1]}, 정확: ${arr3[0] == 0.0}`);
+print(`  * simd for → 컴파일러가 자동으로 SIMD 명령어로 변환 (AVX2/AVX-512)`);
+print(`  * step 4 언롤 → 루프 제어 오버헤드 75% 감소`);
+
+print("");
+print("══════════════════════════════════════════════════════");
+print("⚠  메모리 장벽: 싱글스레드 데모");
+print("══════════════════════════════════════════════════════");
+int[] shared_mem = [0, 0];
+safe_producer(shared_mem);
+print(`  생산자: data[0]=42 기록 → fence_full() → data[1]=1 신호`);
+safe_consumer(shared_mem);
+print(`  * fence_full()  = mfence(x86) / dmb ish(ARM) 삽입`);
+print(`  * 컴파일러 재배치 금지 + CPU 비순차(OoO) 실행 장벽`);
+print(`  * 실제 멀티스레드에서 fence 없이 data[1]=1이 data[0]=42보다`);
+print(`    먼저 보일 수 있음 → 소비자가 0을 읽는 Data Race 발생`);
+
+print("");
+print("── 요약 ────────────────────────────────────────────");
+print("① 독립 누산기: 의존성 체인 제거 → CPU ALU 병렬 활용");
+print("② 정렬 데이터: 분기 전환 최소화 → 예측 성공률 ↑");
+print("③ SIMD/언롤:   루프 오버헤드 제거 + 벡터 명령어 활용");
+print("⚠  fence:      재배치 금지 → 멀티스레드 메모리 가시성 보장");

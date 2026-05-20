@@ -1,0 +1,119 @@
+module log_analyzer;
+
+# ── 1. 로그 레코드 구조 ──────────────────────────────────────
+
+class LogRecord {
+    String timestamp;
+    String level;
+    String message;
+    int line_no;
+}
+
+# ── 2. 비동기 파일 읽기 ──────────────────────────────────────
+
+async list<String> read_lines_async(String path) {
+    try {
+        String content = await io.read_file(path);
+        list<String> lines = str.split(content, "\n");
+        return lines;
+    } catch (e) {
+        print(`파일 읽기 실패 [${path}]: ${e}`);
+        return [];
+    }
+}
+
+# ── 3. 로그 파싱 ─────────────────────────────────────────────
+
+Option<LogRecord> parse_log_line(String line, int line_no) {
+    if (str.is_empty(str.trim(line))) { return None; }
+
+    list<String> parts = str.split(line, " ");
+    if (lst.length(parts) < 4) { return None; }
+
+    LogRecord r;
+    r.timestamp = `${parts[0]} ${parts[1]}`;
+    r.level     = str.replace(parts[2], "[", "");
+    r.level     = str.replace(r.level, "]", "");
+    r.message   = str.join(lst.slice(parts, 3, lst.length(parts)), " ");
+    r.line_no   = line_no;
+    return Some(r);
+}
+
+# ── 4. 병렬 분석 함수 ────────────────────────────────────────
+
+class AnalysisResult {
+    int total;
+    int errors;
+    int warnings;
+    int info_count;
+    list<String> error_messages;
+}
+
+@bench
+AnalysisResult analyze_parallel(list<String> lines) {
+    AnalysisResult result;
+    result.total = 0;
+    result.errors = 0;
+    result.warnings = 0;
+    result.info_count = 0;
+    result.error_messages = [];
+
+    result.total = lst.length(lines);
+
+    int err_count  = 0;
+    int warn_count = 0;
+    int info_count = 0;
+
+    parallel for reduction(+:err_count) reduction(+:warn_count) reduction(+:info_count) (i in 0..result.total) {
+        String line = lines[i];
+        if (str.contains(line, "[ERROR]")) {
+            err_count  += 1;
+        } else if (str.contains(line, "[WARN]")) {
+            warn_count += 1;
+        } else if (str.contains(line, "[INFO]")) {
+            info_count += 1;
+        }
+    }
+
+    result.errors     = err_count;
+    result.warnings   = warn_count;
+    result.info_count = info_count;
+
+    for (i in 0..result.total) {
+        if (str.contains(lines[i], "[ERROR]")) {
+            lst.push(result.error_messages, lines[i]);
+        }
+    }
+
+    return result;
+}
+
+# ── 5. 실행 흐름 ─────────────────────────────────────────────
+
+list<String> fake_log = [
+    "2024-01-15 10:00:01 [INFO] server started",
+    "2024-01-15 10:00:02 [INFO] database connected",
+    "2024-01-15 10:05:33 [WARN] memory usage over 80%",
+    "2024-01-15 10:07:45 [ERROR] NullPointerException in UserService",
+    "2024-01-15 10:07:46 [ERROR] transaction rolled back",
+    "2024-01-15 10:08:01 [INFO] retrying",
+    "2024-01-15 10:08:05 [INFO] recovery complete",
+    "2024-01-15 10:15:22 [WARN] response time > 500ms",
+    "2024-01-15 10:20:00 [ERROR] disk space low",
+    "2024-01-15 10:20:01 [INFO] server shutdown",
+];
+
+AnalysisResult result = analyze_parallel(fake_log);
+
+print("=== Log Analysis Results ===");
+print(`total lines: ${result.total}`);
+print(`errors:   ${result.errors}`);
+print(`warnings: ${result.warnings}`);
+print(`info:     ${result.info_count}`);
+
+if (lst.length(result.error_messages) > 0) {
+    print("\n=== Error Messages ===");
+    for (msg of result.error_messages) {
+        print(`  >> ${msg}`);
+    }
+}

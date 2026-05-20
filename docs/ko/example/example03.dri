@@ -1,0 +1,145 @@
+module arena_example;
+
+# ── 1. 기본 소유권 ────────────────────────────────────────────
+
+class Node {
+    int value;
+    String label;
+}
+
+void demo_ownership() {
+    # Own<T>: 유일 소유 — 이동 후 원본 사용 불가
+    Own<Node> a = new Node();
+    a.value = 42;
+    a.label = "first";
+
+    Own<Node> b = move a;   # 소유권 이전
+    print(`b.value = ${b.value}`);
+    # a는 이제 무효 — 컴파일러가 검출
+
+    # Ref<T>: 공유 소유 — 여러 곳에서 참조 가능
+    Ref<Node> r1 = new Node();
+    r1.value = 100;
+    Ref<Node> r2 = r1;      # 참조 카운트 증가
+    r2.value = 200;         # r1과 r2가 같은 객체 공유
+    print(`r1.value = ${r1.value}`);  # 200 출력
+}
+
+# ── 2. Borrow — 임시 읽기 참조 ──────────────────────────────
+
+double sum_values(Borrow<list<int>> arr) {
+    # Borrow<T>: 읽기 전용, 소유권 이동 없음
+    double s = 0.0;
+    for (x of arr) { s += x; }
+    return s;
+}
+
+void scale_inplace(mut Borrow<list<double>> arr, double factor) {
+    # mut Borrow<T>: 배타적 가변 참조
+    for (i in 0..lst.length(arr)) {
+        arr[i] = arr[i] * factor;
+    }
+}
+
+# ── 3. @region 아레나 할당 ───────────────────────────────────
+
+class Particle {
+    double x;
+    double y;
+    double vx;
+    double vy;
+    double mass;
+}
+
+void simulate_frame(int n_particles) {
+    @region frame {
+        # 이 블록 안에서 할당된 모든 메모리는
+        # 블록 종료 시 일괄 해제 (heap fragmentation 없음)
+        list<Particle> particles = [];
+        double[] forces_x = lst.fill(n_particles, 0.0);
+        double[] forces_y = lst.fill(n_particles, 0.0);
+        double[] temp_buf = lst.fill(n_particles * 4, 0.0);
+
+        # 파티클 초기화
+        for (i in 0..n_particles) {
+            Particle p;
+            p.x = i * 0.1;
+            p.y = 0.0;
+            p.vx = 0.0;
+            p.vy = 0.0;
+            p.mass = 1.0;
+            lst.push(particles, p);
+        }
+
+        # 힘 계산
+        for (i in 0..n_particles) {
+            forces_x[i] = -particles[i].x * 9.8;  # 간단한 복원력
+            forces_y[i] = -9.8;
+        }
+
+        # 위치 갱신
+        for (i in 0..n_particles) {
+            particles[i].vx += forces_x[i] * 0.016;
+            particles[i].vy += forces_y[i] * 0.016;
+            particles[i].x  += particles[i].vx * 0.016;
+            particles[i].y  += particles[i].vy * 0.016;
+        }
+
+        print(`프레임 완료: ${n_particles}개 파티클 처리`);
+        # ← 여기서 particles, forces_x, forces_y, temp_buf 모두 자동 해제
+    }
+    print("아레나 해제 완료");
+}
+
+# ── 4. 중첩 아레나 ───────────────────────────────────────────
+
+void nested_arenas() {
+    @region outer {
+        double[] persistent = lst.fill(1000, 1.0);
+
+        for (frame in 0..60) {
+            @region inner {
+                # 프레임별 임시 데이터 — 매 프레임 재사용
+                double[] scratch = lst.fill(10000, 0.0);
+                double[] indices = lst.fill(5000, 0.0);
+
+                # 처리 로직...
+                for (i in 0..1000) {
+                    scratch[i] = persistent[i] * frame;
+                }
+                # inner 종료: scratch, indices 해제
+            }
+            # persistent는 outer 스코프이므로 유지
+        }
+        # outer 종료: persistent 해제
+    }
+}
+
+# ── 5. 탈출 분석 예제 ─────────────────────────────────────────
+
+# @region 탈출 분석: 아레나 밖으로 포인터가 새는 것을 막음
+void escape_analysis_demo() {
+    String leaked_ref;  # @region 밖에 선언
+
+    @region temp {
+        String local_str = "아레나 내부 문자열";
+        # 컴파일러 경고: local_str이 @region 밖으로 탈출
+        # leaked_ref = local_str;  ← 이 줄은 컴파일 오류
+        print(local_str);  # OK: 아레나 내부에서 사용
+    }
+    # leaked_ref 사용 시 use-after-free 발생 — dri가 차단
+}
+
+# 실행
+demo_ownership();
+
+list<int> nums = [1, 2, 3, 4, 5];
+print(`합계: ${sum_values(nums)}`);
+
+list<double> vals = [1.0, 2.0, 3.0];
+scale_inplace(vals, 2.0);
+for (v of vals) { print(v); }
+
+simulate_frame(1000);
+nested_arenas();
+escape_analysis_demo();

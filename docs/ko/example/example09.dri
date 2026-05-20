@@ -1,0 +1,310 @@
+module peak_bench;
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 하드웨어 최대 성능 벤치마크 — Roofline Model
+#
+# 목표: CPU/메모리 이론적 천장(Ceiling)에 얼마나 근접하는가?
+#
+# Roofline 원리:
+#   Performance = min(Peak_FLOPS,  AI × Peak_BW)
+#   AI(Arithmetic Intensity) = FLOP / Byte_accessed
+#
+#   낮은 AI → 메모리 대역폭이 병목 (Memory-bound)
+#   높은 AI → CPU 연산 능력이 병목 (Compute-bound)
+#
+# 측정 항목:
+#   ① STREAM Triad    — 지속 메모리 대역폭 (AI ≈ 0.083)
+#   ② 캐시 계층 스윕  — L1 / L2 / L3 / RAM 대역폭 비교
+#   ③ 연산 강도 스펙트럼 — AI=0.125 ~ AI=∞ 비교
+#   ④ Peak FLOPS      — 순수 FMA 연산 한계
+#   ⑤ Roofline 시각화 — 어느 병목이 지배하는가
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── 배열 크기 정의 (double = 8B) ──────────────────────────────────────────────
+# Apple M-series 기준 (P-core L1=192KB, L2=12MB, SLC=24MB)
+# 일반 x86 기준   (L1=32KB, L2=256KB, L3=8-32MB)
+int L1_N  = 8000;      # ~64KB   per array  → L1 캐시 내
+int L2_N  = 200000;    # ~1.6MB  per array  → L2 캐시 내
+int L3_N  = 1500000;   # ~12MB   per array  → L3 캐시 내
+int RAM_N = 8000000;   # ~64MB   per array  → 반드시 메인 메모리
+int FLOP_ITERS = 50000000;   # 5천만 반복 × 16 FMA = 800M FLOP
+
+double SCALE = 2.718281828;  # 트라이어드 곱셈 상수
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 유틸: 성능 지표 계산
+# ─────────────────────────────────────────────────────────────────────────────
+double bytes_to_gbps(int elems, int arrays, double ms) {
+    # (원소수 × 배열수 × 8B) / (ms × 1e6) = GB/s
+    double total_bytes = elems * 1.0 * arrays * 8.0;
+    return total_bytes / (ms * 1000000.0);
+}
+
+double ops_to_gflops(long ops, double ms) {
+    return (ops * 1.0) / (ms * 1000000.0);
+}
+
+# 간단한 숫자 포매팅 (소수점 2자리)
+String fmt(double v) {
+    if (v >= 1000.0) { return `${math.round(v)}      `; }
+    if (v >= 100.0)  { return `${math.floor(v * 10.0) / 10.0} `; }
+    if (v >= 10.0)   { return `${math.floor(v * 100.0) / 100.0}`; }
+    return `${math.floor(v * 1000.0) / 1000.0}`;
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ① STREAM 벤치마크 4종 (학술 표준 메모리 대역폭 측정)
+#
+# 각 커널의 Arithmetic Intensity:
+#   Copy  : 0 FLOP,  2N×8B  → AI = 0     (순수 대역폭)
+#   Scale : 1 FLOP,  2N×8B  → AI = 0.063
+#   Add   : 1 FLOP,  3N×8B  → AI = 0.042
+#   Triad : 2 FLOP,  3N×8B  → AI = 0.083 ← 표준 지표
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Copy: b[i] = a[i]  (읽기 + 쓰기 = 2N × 8B)
+void stream_copy(Borrow<double[]> src, mut Borrow<double[]> dst) {
+    simd for (i in 0..lst.length(src)) { dst[i] = src[i]; }
+}
+
+# Scale: b[i] = s × c[i]  (1 FLOP, 2N × 8B)
+void stream_scale(mut Borrow<double[]> b, Borrow<double[]> c, double s) {
+    simd for (i in 0..lst.length(c)) { b[i] = s * c[i]; }
+}
+
+# Add: c[i] = a[i] + b[i]  (1 FLOP, 3N × 8B)
+void stream_add(Borrow<double[]> a, Borrow<double[]> b, mut Borrow<double[]> c) {
+    simd for (i in 0..lst.length(a)) { c[i] = a[i] + b[i]; }
+}
+
+# Triad: a[i] = b[i] + s × c[i]  (2 FLOP = 1 FMA, 3N × 8B)
+# ← FMA 명령어 1개로 최적화 가능한 표준 메모리 바운드 커널
+void stream_triad(mut Borrow<double[]> a, Borrow<double[]> b, Borrow<double[]> c, double s) {
+    simd for (i in 0..lst.length(a)) { a[i] = b[i] + s * c[i]; }
+}
+
+# 병렬 Triad
+void stream_triad_parallel(mut Borrow<double[]> a, Borrow<double[]> b,
+                           Borrow<double[]> c, double s) {
+    parallel for (i in 0..lst.length(a)) { a[i] = b[i] + s * c[i]; }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ② 연산 강도(AI) 스펙트럼
+# ─────────────────────────────────────────────────────────────────────────────
+
+# AI ≈ 0.125: 메모리에서 읽고 2 FLOP (메모리 바운드)
+double compute_ai_low(Borrow<double[]> a, Borrow<double[]> b) {
+    double s = SCALE;
+    double r = 0.0;
+    simd for (i in 0..lst.length(a)) {
+        r = r + a[i] * s + b[i];   # 2 FLOP, 16B 읽기 → AI=0.125
+    }
+    return r;
+}
+
+# AI ≈ 2: 읽기 1회당 16 FMA (밸런스 포인트 근처)
+double compute_ai_mid(Borrow<double[]> a) {
+    double x = 1.0000001;
+    double s = SCALE;
+    int n = lst.length(a);
+    for (i in 0..n) {
+        double v = a[i];      # 1 read = 8B
+        x = x * s + v;        # FMA ×8 = 16 FLOP → AI = 16/8 = 2
+        x = x * s + x;
+        x = x * s + x;
+        x = x * s + x;
+        x = x * s + x;
+        x = x * s + x;
+        x = x * s + x;
+        x = x * s + v;
+    }
+    return x;
+}
+
+# AI = ∞: 메모리 접근 전혀 없는 순수 FMA 루프 (컴퓨트 바운드 천장)
+# → CPU의 이론적 FLOPS 한계를 측정
+double compute_ai_infinite(int iters) {
+    double x = 1.0000001;
+    double y = 0.9999999;
+    double a = SCALE;
+    double b = 1.0 / SCALE;
+    for (i in 0..iters) {
+        # 루프당 8 FMA = 16 FLOP, 메모리 접근 0 → 레지스터만 사용
+        x = x * a + y;    y = y * b + x;
+        x = x * a + y;    y = y * b + x;
+        x = x * a + y;    y = y * b + x;
+        x = x * a + y;    y = y * b + x;
+    }
+    return x + y;
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 실행: 모든 측정 수행
+# ─────────────────────────────────────────────────────────────────────────────
+print("╔══════════════════════════════════════════════════════════════╗");
+print("║        하드웨어 최대 성능 벤치마크 — Roofline Model           ║");
+print("╚══════════════════════════════════════════════════════════════╝");
+
+# ── 워밍업: 캐시·TLB를 안정 상태로 ─────────────────────────────────────────
+double[] _wa = lst.fill(RAM_N, 1.0);
+double[] _wb = lst.fill(RAM_N, 2.0);
+double[] _wc = lst.fill(RAM_N, 3.0);
+stream_triad(_wa, _wb, _wc, SCALE);
+
+# ════════════════════════════════════════════════════════════════════
+print("\n① STREAM 벤치마크 — 지속 메모리 대역폭 (RAM 레벨)");
+print("──────────────────────────────────────────────────");
+print(`   배열 1개 크기: ${RAM_N * 8 / 1024 / 1024}MB  (×3 배열 = ${RAM_N * 8 * 3 / 1024 / 1024}MB)`);
+
+double[] a = lst.fill(RAM_N, 1.0);
+double[] b = lst.fill(RAM_N, 2.0);
+double[] c = lst.fill(RAM_N, 3.0);
+double[] d = lst.fill(RAM_N, 0.0);
+
+double t0 = perf.now();
+stream_copy(a, d);
+double copy_ms = perf.now() - t0;
+double copy_gbps = bytes_to_gbps(RAM_N, 2, copy_ms);
+
+t0 = perf.now();
+stream_scale(d, a, SCALE);
+double scale_ms = perf.now() - t0;
+double scale_gbps = bytes_to_gbps(RAM_N, 2, scale_ms);
+
+t0 = perf.now();
+stream_add(a, b, c);
+double add_ms = perf.now() - t0;
+double add_gbps = bytes_to_gbps(RAM_N, 3, add_ms);
+
+t0 = perf.now();
+stream_triad(a, b, c, SCALE);
+double triad_ms = perf.now() - t0;
+double triad_gbps = bytes_to_gbps(RAM_N, 3, triad_ms);
+
+print(`   Copy  (AI=0.000): ${copy_ms}  ms → ${copy_gbps}  GB/s`);
+print(`   Scale (AI=0.063): ${scale_ms}  ms → ${scale_gbps}  GB/s`);
+print(`   Add   (AI=0.042): ${add_ms}  ms → ${add_gbps}  GB/s`);
+print(`   Triad (AI=0.083): ${triad_ms}  ms → ${triad_gbps}  GB/s  ← 표준 BW 지표`);
+
+# 병렬 Triad
+t0 = perf.now();
+stream_triad_parallel(a, b, c, SCALE);
+double triad_par_ms = perf.now() - t0;
+double triad_par_gbps = bytes_to_gbps(RAM_N, 3, triad_par_ms);
+print(`   Triad-parallel:   ${triad_par_ms}  ms → ${triad_par_gbps}  GB/s  ← 병렬 버전`);
+
+double peak_bw = triad_gbps;
+if (triad_par_gbps > peak_bw) { peak_bw = triad_par_gbps; }
+
+# ════════════════════════════════════════════════════════════════════
+print("\n② 캐시 계층 구조 — 크기별 대역폭 비교");
+print("──────────────────────────────────────");
+print("   (동일 Triad 커널, 배열 크기만 변경)");
+print("   크기        총 데이터    시간       대역폭     목표");
+
+int[] ns     = [L1_N,  L2_N,  L3_N,  RAM_N];
+String[] lbls = ["L1 ", "L2 ", "L3 ", "RAM"];
+
+for (k in 0..4) {
+    int n = ns[k];
+    String lbl = lbls[k];
+    double[] ca = lst.fill(n, 1.0);
+    double[] cb = lst.fill(n, 2.0);
+    double[] cc = lst.fill(n, 3.0);
+    int kb = n * 8 * 3 / 1024;
+    # 작은 배열은 여러 번 실행해 측정 노이즈 줄임
+    int reps = 1;
+    if (n <= L2_N) { reps = 500; }
+    if (n <= L1_N) { reps = 5000; }
+    t0 = perf.now();
+    for (r in 0..reps) {
+        stream_triad(ca, cb, cc, SCALE);
+    }
+    double ms_total = perf.now() - t0;
+    double ms_avg = ms_total / reps;
+    double gbps = bytes_to_gbps(n, 3, ms_avg);
+    print(`   ${lbl} (${kb}KB)      ${ms_avg}ms    ${gbps} GB/s`);
+}
+
+# ════════════════════════════════════════════════════════════════════
+print("\n③ 연산 강도(AI) 스펙트럼 — 메모리↔컴퓨트 전환점");
+print("───────────────────────────────────────────────────");
+print("   AI 증가 → 메모리 바운드에서 컴퓨트 바운드로 전환");
+
+double[] fa = lst.fill(FLOP_ITERS, 1.0000001);
+double[] fb = lst.fill(FLOP_ITERS, 0.9999999);
+
+# AI ≈ 0.125: 메모리 바운드
+t0 = perf.now();
+double rl = compute_ai_low(fa, fb);
+double ai_low_ms = perf.now() - t0;
+long ai_low_flops = FLOP_ITERS * 2L;
+double ai_low_gflops = ops_to_gflops(ai_low_flops, ai_low_ms);
+double ai_low_gbps   = bytes_to_gbps(FLOP_ITERS, 2, ai_low_ms);
+print(`   AI≈0.125 (메모리 바운드): ${ai_low_ms}ms  → ${ai_low_gflops} GFLOPS / ${ai_low_gbps} GB/s`);
+print(`     → 대역폭이 병목: ${rl > 0.0}`);
+
+# AI ≈ 2: 밸런스 포인트 근처
+t0 = perf.now();
+double rm = compute_ai_mid(fa);
+double ai_mid_ms = perf.now() - t0;
+long ai_mid_flops = FLOP_ITERS * 16L;
+double ai_mid_gflops = ops_to_gflops(ai_mid_flops, ai_mid_ms);
+double ai_mid_gbps   = bytes_to_gbps(FLOP_ITERS, 1, ai_mid_ms);
+print(`   AI≈2     (밸런스):       ${ai_mid_ms}ms  → ${ai_mid_gflops} GFLOPS / ${ai_mid_gbps} GB/s`);
+print(`     → 연산: ${rm > 1.0}`);
+
+# AI = ∞: 컴퓨트 바운드 (순수 FMA, 메모리 접근 0)
+t0 = perf.now();
+double ri = compute_ai_infinite(FLOP_ITERS);
+double ai_inf_ms = perf.now() - t0;
+long ai_inf_flops = FLOP_ITERS * 16L;
+double peak_gflops = ops_to_gflops(ai_inf_flops, ai_inf_ms);
+print(`   AI=∞     (컴퓨트 바운드): ${ai_inf_ms}ms → ${peak_gflops} GFLOPS  ← Peak FLOPS 근사`);
+print(`     → 레지스터 전용 FMA 한계: ${ri > 0.0}`);
+
+# ════════════════════════════════════════════════════════════════════
+print("\n④ Roofline 모델 시각화");
+print("──────────────────────────────────────────────────────────────");
+print("  Performance(GFLOPS)");
+print("       │                                      ● Peak FLOPs");
+print("       │                                   ╱");
+print("       │                               ╱   ─── 컴퓨트 천장");
+print("       │          ● AI≈2           ╱");
+print("       │        ╱             ╱");
+print("       │      ╱ ─── 메모리 ╱     ← AI × BW 직선");
+print("       │    ╱   천장    ╱");
+print("       │ ● AI≈0.125 ╱");
+print("       │──────────────────────────────────────────");
+print("       0.01        0.1          1           10");
+print("              Arithmetic Intensity (FLOPS/Byte)");
+
+print("\n  측정값 요약:");
+print(`    Peak 메모리 대역폭:  ${peak_bw} GB/s`);
+print(`    Peak FLOPS (단일코어): ${peak_gflops} GFLOPS`);
+double ridge_point = peak_gflops / peak_bw;
+print(`    능선점(Ridge Point):  AI = ${ridge_point} FLOPS/Byte`);
+print(`    → AI < ${ridge_point}: 메모리 바운드 (대역폭 늘리면 빨라짐)`);
+print(`    → AI > ${ridge_point}: 컴퓨트 바운드 (SIMD/FMA 최적화가 효과적)`);
+
+# ════════════════════════════════════════════════════════════════════
+print("\n⑤ 이론적 천장 대비 달성률");
+print("──────────────────────────────────────────────");
+
+double achieved_triad = triad_gbps;
+double achieved_par   = triad_par_gbps;
+double achieved_flops = peak_gflops;
+
+# 이론적 Peak 추정 (측정값 중 최대치를 기준으로)
+double best_bw = achieved_par;
+if (achieved_triad > best_bw) { best_bw = achieved_triad; }
+
+print(`   STREAM Triad  단일:  ${achieved_triad} GB/s`);
+print(`   STREAM Triad  병렬:  ${achieved_par} GB/s`);
+print(`   순수 FMA GFLOPS:     ${achieved_flops} GFLOPS`);
+print(`   병렬 대역폭 향상:    ${achieved_par / achieved_triad}x`);
+
+print("\n  ✓ 모든 측정 완료 — 이 수치가 현재 하드웨어의 실측 한계입니다");
+print("  ✓ SIMD(simd for) 적용 시 메모리 대역폭을 최대한 활용");
+print("  ✓ 병렬(parallel for) 적용 시 다중코어로 대역폭 추가 확장 가능");

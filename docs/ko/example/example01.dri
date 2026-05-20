@@ -1,0 +1,143 @@
+# 행렬 곱셈: C = A × B  (N×N)
+# ① naive (기준선)  ② SIMD + 병렬  ③ 캐시 블로킹 (Loop Tiling)
+
+module matmul;
+
+int N    = 512;
+int TILE = 64;   # 타일 크기: 64×64 × 8바이트 = 32KB → 세 타일 합산 ~96KB (L2 캐시 적합)
+                 # N ≥ 2048 에서 효과 극대화 (캐시 용량 초과 구간)
+
+# 64-byte 정렬 2D 행렬 (평탄화 저장)
+@align(64)
+class Matrix {
+    int rows;
+    int cols;
+    double[] data;
+
+    void init(int r, int c) {
+        rows = r; cols = c;
+        data = lst.fill(r * c, 0.0);
+    }
+
+    double get(int r, int c) { return data[r * cols + c]; }
+    void set(int r, int c, double v) { data[r * cols + c] = v; }
+}
+
+void fill_sequential(Matrix m, int offset) {
+    for (i in 0..m.rows) {
+        for (j in 0..m.cols) {
+            m.set(i, j, (i * m.cols + j + offset) * 0.001);
+        }
+    }
+}
+
+# ── ① 기준선: 순수 i-j-k (캐시 비친화적) ─────────────────────────────────────
+void matmul_naive(Matrix a, Matrix b, Matrix c) {
+    for (i in 0..N) {
+        for (j in 0..N) {
+            double s = 0.0;
+            for (k in 0..N) { s += a.get(i, k) * b.get(k, j); }
+            c.set(i, j, s);
+        }
+    }
+}
+
+# ── ② SIMD + 병렬: i-k-j 순서 (캐시 친화적, 타일링 없음) ──────────────────────
+@bench
+void matmul_simd_parallel(Matrix a, Matrix b, Matrix c) {
+    parallel for (i in 0..N) {
+        for (k in 0..N) {
+            double aik = a.get(i, k);
+            simd for (j in 0..N) {
+                where (aik != 0.0) {
+                    c.set(i, j, c.get(i, j) + aik * b.get(k, j));
+                } otherwise {}
+            }
+        }
+    }
+}
+
+# ── ③ 캐시 블로킹 (Loop Tiling): 6-중 루프 ──────────────────────────────────
+# 핵심 원리:
+#   외부 3개 루프(ii, kk, jj): TILE 단위로 행렬을 서브블록으로 분할
+#   내부 3개 루프(i, k, j):   한 타일 블록 (TILE×TILE) 연산 — 이 구간이 캐시에 상주
+#
+# 캐시 효율 분석 (TILE=64, double=8B):
+#   A 타일: 64×64×8 = 32 KB
+#   B 타일: 64×64×8 = 32 KB
+#   C 타일: 64×64×8 = 32 KB
+#   합계:   ~96 KB → L2(256 KB) 안에 상주 → 캐시 미스 대폭 감소
+#
+# N=512:  naive 대비 ~1.5-2× (아직 L3에 들어오는 크기)
+# N=2048: naive 대비 ~3-5× (L3 초과 → 타일링 효과 극대화)
+@bench
+void matmul_tiled(Matrix a, Matrix b, Matrix c) {
+    parallel for (ii in 0..N step TILE) {
+        for (kk in 0..N step TILE) {
+            for (jj in 0..N step TILE) {
+                # 경계 클램핑 (N이 TILE의 배수가 아닐 때 대비)
+                int i_end = math.min(ii + TILE, N);
+                int k_end = math.min(kk + TILE, N);
+                int j_end = math.min(jj + TILE, N);
+
+                # 내부 루프: TILE×TILE 서브블록 (캐시 상주 구간)
+                for (i in ii..i_end) {
+                    for (k in kk..k_end) {
+                        double aik = a.get(i, k);
+                        simd for (j in jj..j_end) {
+                            c.set(i, j, c.get(i, j) + aik * b.get(k, j));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+# ── 검증 함수 (상위 10×10 원소) ────────────────────────────────────────────────
+boolean verify(Matrix c_ref, Matrix c_opt, double tol) {
+    for (i in 0..10) {
+        for (j in 0..10) {
+            double diff = c_ref.get(i, j) - c_opt.get(i, j);
+            if (diff < 0.0) { diff = -diff; }
+            if (diff > tol) {
+                print("불일치:", i, j, c_ref.get(i, j), c_opt.get(i, j));
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+# ── 행렬 초기화 ─────────────────────────────────────────────────────────────────
+Matrix a;  a.init(N, N);
+Matrix b;  b.init(N, N);
+Matrix c1; c1.init(N, N);   # naive 결과 (기준)
+Matrix c2; c2.init(N, N);   # SIMD+병렬 결과
+Matrix c3; c3.init(N, N);   # 타일드 결과
+
+fill_sequential(a, 0);
+fill_sequential(b, 100);
+
+# ── 벤치마크 ─────────────────────────────────────────────────────────────────────
+double t0 = perf.now();
+matmul_naive(a, b, c1);
+double naive_ms = perf.now() - t0;
+print(`① naive  (i-j-k):           ${naive_ms} ms`);
+
+# @bench 어노테이션이 내부 타이머 자동 출력
+matmul_simd_parallel(a, b, c2);
+matmul_tiled(a, b, c3);
+
+# ── 정확도 검증 ──────────────────────────────────────────────────────────────────
+boolean ok2 = verify(c1, c2, 1e-9);
+boolean ok3 = verify(c1, c3, 1e-9);
+print(`② simd+parallel 검증: ${ok2}`);
+print(`③ tiled           검증: ${ok3}`);
+
+# ── GFLOP/s 계산 (naive 기준) ────────────────────────────────────────────────────
+double ops    = 2.0 * N * N * N;           # N³ mul + N³ add
+double gflops = ops / (naive_ms * 1e6);    # ms → seconds
+print(`GFLOP/s (naive): ${gflops}`);
+print(`타일 크기: ${TILE}×${TILE} (A+B+C 타일 ≈ ${TILE*TILE*8*3/1024}KB, L2 캐시 최적)`);
+print(`※ N≥2048 에서 tiled 효과 극대화 (현재 N=${N})`);
