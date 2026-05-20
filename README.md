@@ -2,7 +2,7 @@
 
 > **Learn like Python. Scale like C++.**  
 > How to install on CMD?
-> https://github.com/drewdrew0414/dri-lang/releases/download/0.1.0/dri-install.exe
+> [downloads](https://drvpm-registry.cloud/dist/v0.1.0/dri-install.exe)
 
 ---
 
