@@ -40,6 +40,8 @@ public:
     // smart pointer variable tracking: var name → "own" or "ref"
     // Kept public so argsStr() (friend free function) can auto-dereference.
     std::unordered_map<std::string, std::string> smart_ptr_vars_;
+    // list variable tracking for bounds-checked subscript emission
+    std::unordered_set<std::string> list_vars_;
 
 private:
     CodegenOptions opts_;

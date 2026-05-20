@@ -447,12 +447,27 @@ std::string Codegen::emitBinary(const BinaryExpr& e) {
     if (e.op=="in")              return "__drv_in(" + l + ", " + r + ")";
     if (e.op=="is")              return "(" + l + " == " + r + ")";
     if (e.op=="as")              return "static_cast<" + r + ">(" + l + ")"; // r is type name
+    if (e.op=="/" || e.op=="%" || e.op=="//") {
+        bool const_zero = false;
+        if (auto* il = dynamic_cast<const IntLit*>(e.right.get()))    const_zero = (il->value == 0);
+        if (auto* ll = dynamic_cast<const LongLit*>(e.right.get()))   const_zero = (ll->value == 0);
+        if (auto* dl = dynamic_cast<const DoubleLit*>(e.right.get())) const_zero = (dl->value == 0.0);
+        if (const_zero)
+            warnings_.push_back(opts_.source_file + ":" + std::to_string(e.line) +
+                                 ": warning: division by constant zero");
+    }
     return "(" + l + " " + e.op + " " + r + ")";
 }
 
 std::string Codegen::emitUnary(const UnaryExpr& e) {
     std::string v = emitExpr(*e.operand);
     if (e.op=="not")   return "!" + v;
+    // null-safe dereference for Own<T> variables
+    if (e.op=="*" && e.prefix) {
+        if (auto* id = dynamic_cast<const IdentExpr*>(e.operand.get()))
+            if (smart_ptr_vars_.count(id->name) && smart_ptr_vars_.at(id->name) == "own")
+                return "__drv_own_deref(" + v + ")";
+    }
 
     if (e.op == "await") {
         // Built-in namespace functions (io.*, sys.*, str.*, etc.) are
@@ -540,6 +555,9 @@ std::string Codegen::emitIndex(const IndexExpr& e) {
     std::string obj = emitExpr(*e.object);
     std::string idx = emitExpr(*e.index);
     if (e.index2) return obj + "[{" + idx + ", " + emitExpr(*e.index2) + "}]"; // 2D
+    if (auto id = dynamic_cast<const IdentExpr*>(e.object.get()))
+        if (list_vars_.count(id->name))
+            return "__drv_lst_at(" + obj + ", " + idx + ")";
     return obj + "[" + idx + "]";
 }
 
@@ -756,6 +774,10 @@ void Codegen::emitVarDecl(const VarDecl& s) {
     bool is_ref = (s.type.name == "Ref");
     if (is_own) smart_ptr_vars_[s.name] = "own";
     if (is_ref) smart_ptr_vars_[s.name] = "ref";
+    // Track list variables for bounds-checked subscript
+    bool is_list = (s.type.name == "list") ||
+                   (s.type.name == "Borrow" && !s.type.args.empty() && s.type.args[0].name == "list");
+    if (is_list) list_vars_.insert(s.name);
 
     std::string type = mapType(s.type);
     std::string init_str;
@@ -852,13 +874,16 @@ void Codegen::emitFuncDecl(const FuncDecl& s) {
     writeil(sig + " {");
     ++indent_;
 
-    // Save smart_ptr_vars_ so local Own<T> variables don't leak into outer
-    // scopes or sibling functions (e.g., 'n' in insert_node vs for-each 'n').
+    // Save smart_ptr_vars_ and list_vars_ so locals don't leak into outer scopes.
     auto saved_smart_ptr_vars = smart_ptr_vars_;
-    // Track Own<T>/Ref<T> parameters so member accesses use -> correctly.
+    auto saved_list_vars = list_vars_;
+    // Track Own<T>/Ref<T>/list<T> parameters.
     for (auto& p : s.params) {
         if (p.type.name == "Own") smart_ptr_vars_[p.name] = "own";
         if (p.type.name == "Ref") smart_ptr_vars_[p.name] = "ref";
+        bool plist = (p.type.name == "list") ||
+                     (p.type.name == "Borrow" && !p.type.args.empty() && p.type.args[0].name == "list");
+        if (plist) list_vars_.insert(p.name);
     }
 
     if (is_bench) {
@@ -875,6 +900,7 @@ void Codegen::emitFuncDecl(const FuncDecl& s) {
     for (auto& stmt : s.body) emitStmt(*stmt);
     tracing_ = prev_tracing; tracing_func_ = prev_func;
     smart_ptr_vars_ = std::move(saved_smart_ptr_vars); // restore on exit
+    list_vars_ = std::move(saved_list_vars);
     --indent_;
     writeil("}");
     // Emit pragma suffix for scope annotations (@fast_math reset, etc.)
@@ -1419,6 +1445,14 @@ std::string Codegen::emit(const Program& prog) {
 
     // ── drv runtime helpers ───────────────────────────────────────────────────
     writeln("// ── drv runtime ──────────────────────────────────────────────────");
+    writeln("template<typename T>");
+    writeln("static T& __drv_own_deref(std::unique_ptr<T>&p){");
+    writeln("    if(!p) throw std::runtime_error(\"null pointer dereference (Own<T> is null)\");");
+    writeln("    return *p;}");
+    writeln("template<typename T>");
+    writeln("static const T& __drv_own_deref(const std::unique_ptr<T>&p){");
+    writeln("    if(!p) throw std::runtime_error(\"null pointer dereference (Own<T> is null)\");");
+    writeln("    return *p;}");
     // Recursive vector overload: list<list<T>> → "[elem, elem, ...]"
     writeln("template<typename T> static std::string __drv_to_str(const std::vector<T>&);");
     writeln("template<typename T> static std::string __drv_to_str(const T& v) {");
@@ -1656,7 +1690,18 @@ std::string Codegen::emit(const Program& prog) {
     writeln("static bool __drv_reflect_has_field(const T&, const std::string&) { return false; }");
     writeln("// Collections");
     writeln("template<typename T>");
-    writeln("static T __drv_lst_pop(std::vector<T>&v){auto r=v.back();v.pop_back();return r;}");
+    writeln("static T& __drv_lst_at(std::vector<T>&v,int64_t i){");
+    writeln("    if(i<0||i>=(int64_t)v.size()) throw std::out_of_range(\"list index \"+std::to_string(i)+\" out of range (size=\"+std::to_string(v.size())+\")\");");
+    writeln("    return v[i];}");
+    writeln("template<typename T>");
+    writeln("static const T& __drv_lst_at(const std::vector<T>&v,int64_t i){");
+    writeln("    if(i<0||i>=(int64_t)v.size()) throw std::out_of_range(\"list index \"+std::to_string(i)+\" out of range (size=\"+std::to_string(v.size())+\")\");");
+    writeln("    return v[i];}");
+    writeln("template<typename T>");
+    writeln("static T __drv_lst_pop(std::vector<T>&v){");
+    writeln("    if(v.empty()) throw std::runtime_error(\"lst.pop: cannot pop from an empty list\");");
+    writeln("    auto r=v.back(); v.pop_back(); return r;");
+    writeln("}");
     writeln("template<typename T>");
     writeln("static std::vector<T> __drv_lst_sort(std::vector<T> v){std::sort(v.begin(),v.end());return v;}");
     writeln("template<typename T>");
@@ -1677,7 +1722,9 @@ std::string Codegen::emit(const Program& prog) {
     writeln("static std::vector<T> __drv_lst_slice(const std::vector<T>&v,int64_t a,int64_t b){");
     writeln("    return{v.begin()+a,v.begin()+b};}");
     writeln("template<typename T>");
-    writeln("static std::vector<T> __drv_lst_fill(int64_t n,T val){return std::vector<T>(n,val);}");
+    writeln("static std::vector<T> __drv_lst_fill(int64_t n,T val){");
+    writeln("    if(n<0) throw std::runtime_error(\"lst.fill: size cannot be negative (got \"+std::to_string(n)+\")\");");
+    writeln("    return std::vector<T>(n,val);}");
     writeln("template<typename T>");
     writeln("static std::vector<T> __drv_lst_unique(std::vector<T> v){");
     writeln("    std::vector<T>r;for(auto&x:v)if(!__drv_lst_contains(r,x))r.push_back(x);return r;}");
@@ -1789,9 +1836,12 @@ std::string Codegen::emit(const Program& prog) {
         if (isGlobalDecl(*s)) {
             emitStmt(*s);
         } else if (auto* vd = dynamic_cast<const VarDecl*>(s.get())) {
-            // Track smart-pointer kinds (needed before any function refers to it)
+            // Track smart-pointer and list kinds (needed before any function refers to it)
             if (vd->type.name == "Own") smart_ptr_vars_[vd->name] = "own";
             if (vd->type.name == "Ref") smart_ptr_vars_[vd->name] = "ref";
+            if (vd->type.name == "list" ||
+                (vd->type.name == "Borrow" && !vd->type.args.empty() && vd->type.args[0].name == "list"))
+                list_vars_.insert(vd->name);
             std::string prefix;
             emitVarAnnotations(vd->annotations, prefix);
             bool is_auto = (vd->type.name == "var" || vd->type.name == "auto");

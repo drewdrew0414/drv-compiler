@@ -865,7 +865,7 @@ ExprPtr Parser::parsePower() {
 }
 
 ExprPtr Parser::parseUnary() {
-    if (check(TK::Minus)||check(TK::Bang)||check(TK::KwNot)||check(TK::Tilde)) {
+    if (check(TK::Minus)||check(TK::Bang)||check(TK::KwNot)||check(TK::Tilde)||check(TK::Star)) {
         auto n = std::make_unique<UnaryExpr>();
         n->line = peek().line;
         n->op = advance().value;
