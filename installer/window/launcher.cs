@@ -153,7 +153,7 @@ namespace DriInstaller
             btnCancel.Enabled  = false;
             btnInstall.Text    = "다운로드 중...";
 
-            string ps1Url  = "https://drvpm-registry.cloud/dist/v0.1.0/install.ps1";
+            string ps1Url  = "https://drvpm-registry.cloud/dist/v0.1.0/window/install.ps1";
             string ps1Path = Path.Combine(Path.GetTempPath(), "dri-install-" + Guid.NewGuid().ToString("N").Substring(0, 8) + ".ps1");
 
             try
