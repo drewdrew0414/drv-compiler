@@ -1,0 +1,6 @@
+module build_test;
+# Simple program to verify dri build works
+# This file is also used as the main source in tests/cases/test_manifest/dri.drpm
+print("build manifest ok");
+int x = 6 * 7;
+print(x);

@@ -1,0 +1,26 @@
+module control;
+# if/else
+int x = 5;
+if (x > 3) { print("gt"); } else { print("le"); }
+
+# for range
+int sum = 0;
+for (i in 0..5) { sum += i; }
+print(sum);
+
+# while
+int n = 1;
+while (n < 16) { n *= 2; }
+print(n);
+
+# switch — case(expr) -> { body };
+switch (x) {
+    case(5) -> { print("five"); };
+    default -> { print("other"); };
+}
+
+# for each over list
+list<int> nums = [10, 20, 30];
+int acc = 0;
+for (v of nums) { acc += v; }
+print(acc);

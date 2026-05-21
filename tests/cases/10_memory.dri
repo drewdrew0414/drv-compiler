@@ -1,0 +1,17 @@
+module memory;
+# Own<T> — unique ownership
+Own<int> p = new int(99);
+print(*p);
+
+# Ref<T> — shared ownership (linked list)
+class Node {
+    int val;
+    Ref<Node> next;
+}
+Ref<Node> n1 = new Node();
+n1.val = 1;
+Ref<Node> n2 = new Node();
+n2.val = 2;
+n1.next = n2;
+print(n1.val);
+print(n1.next.val);

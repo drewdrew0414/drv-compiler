@@ -1,0 +1,6 @@
+module strict;
+# This file should compile clean with no warnings
+int a = 10;
+int b = 3;
+int c = a / b;
+print(c);

@@ -145,3 +145,5 @@ stdlib/
 *.generated.h
 
 installer/install.txt
+
+*.expected

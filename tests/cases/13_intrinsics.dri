@@ -1,0 +1,18 @@
+module intrinsics;
+# bits intrinsics
+print(bits.popcount(255));
+print(bits.clz(1));
+print(bits.ctz(8));
+print(bits.log2(16));
+
+# simd.fmadd (a*b+c)
+double r = simd.fmadd(2.0, 3.0, 1.0);
+print(r);
+
+# math.invsqrt
+double inv = math.invsqrt(4.0);
+print(inv);
+
+# sys.time_ms returns a number > 0
+double t = sys.time_ms();
+print(t > 0.0);

@@ -1,0 +1,14 @@
+module lists;
+list<int> a = [1, 2, 3, 4, 5];
+print(lst.size(a));
+lst.push(a, 6);
+print(lst.size(a));
+print(a[0]);
+print(a[5]);
+int popped = lst.pop(a);
+print(popped);
+print(lst.size(a));
+list<int> b = lst.sort(a);
+print(b[0]);
+list<int> c = lst.fill(3, 0);
+print(lst.size(c));

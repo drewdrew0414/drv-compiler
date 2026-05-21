@@ -1,0 +1,24 @@
+module exceptions;
+# try/catch — catch variable only (no type annotation)
+try {
+    int x = 1;
+    if (x > 0) { throw "positive error"; }
+} catch (e) {
+    print("caught exception");
+}
+
+# lst.pop on empty list
+try {
+    list<int> empty = [];
+    int v = lst.pop(empty);
+} catch (e2) {
+    print("pop empty caught");
+}
+
+# lst.fill with negative size
+try {
+    list<int> neg = lst.fill(-1, 0);
+} catch (e3) {
+    print("fill negative caught");
+}
+print("done");

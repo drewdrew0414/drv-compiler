@@ -1,0 +1,13 @@
+module classes;
+class Point {
+    double x;
+    double y;
+    double dist() {
+        return math.sqrt(x * x + y * y);
+    }
+}
+Point p;
+p.x = 3.0;
+p.y = 4.0;
+print(p.dist());
+print(p.x);

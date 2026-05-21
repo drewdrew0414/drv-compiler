@@ -1,7 +1,7 @@
 # dri 로드맵
 
 dri 컴파일러 및 언어 생태계의 개발 방향을 정리합니다.  
-*마지막 업데이트: 2026-05-19 — v0.1.0 출시 시점 기준*
+*마지막 업데이트: 2026-05-21 — v0.2 전체 + v0.3 일부 + v0.4 일부 + v0.5 일부 + v1.0 일부 적용*
 
 ---
 
@@ -32,10 +32,14 @@ C++20 트랜스파일러 파이프라인 전 구간(렉서 → 파서 → 정적
 | 크로스 컴파일 (`--target`, `--sysroot`, `--cross-cxx`) | ✅ 구현 완료 |
 | 백엔드 (`clang++` / `g++`, `-fopenmp`, `-flto`, `-march=native`) | ✅ 구현 완료 |
 | Windows / macOS / Linux 인스톨러 | ✅ 1차 배포 (PS1 + WinForms + Bash) |
+| 런타임 안전성 (경계 검사, null 역참조, 빈 pop, 음수 fill) | ✅ v0.1.1에서 추가 |
+| 예제 08 — 컴파일러 재배치 최적화 | ✅ 추가됨 |
+| 예제 09 — Roofline 모델 벤치마크 | ✅ 추가됨 |
 
 > **CLI 옵션 요약**: `--exe / --cpp / --check / --debug / --release / --opt N /
 > --native / --lto / --trace / --incremental / --cache-dir /
-> --no-analyze / --target / --sysroot / --cross-cxx / --source-map / -D<FLAG>`
+> --no-analyze / --target / --sysroot / --cross-cxx / --source-map /
+> --strict / --link <libs> / -D<FLAG>`
 
 ---
 
@@ -44,22 +48,22 @@ C++20 트랜스파일러 파이프라인 전 구간(렉서 → 파서 → 정적
 **목표**: 출시된 트랜스파일러를 실전에 견딜 수 있도록 다듬는다.
 
 ### 컴파일러 품질
-- [ ] 에러 메시지 통일 — 모든 단계가 `파일:줄:열: 카테고리: 메시지` 포맷 준수
-- [ ] 진단 메시지 한국어/영어/일본어 i18n 옵션 (`--lang ko|en|ja`)
+- [x] 에러 메시지 통일 — 모든 단계가 `파일:줄:열: 카테고리: 메시지` 포맷 준수
+- [x] 진단 메시지 한국어/영어/일본어 i18n 옵션 (`--lang ko|en|ja`)
 - [ ] `--source-map` 출력 검증 도구
-- [ ] 회귀 테스트 스위트 (`tests/cases/*.dri` + 기대 출력 비교)
-- [ ] CI 매트릭스 (Linux / macOS / Windows × clang / g++)
+- [x] 회귀 테스트 스위트 (`tests/cases/*.dri` + `tests/run_tests.sh`, 21개 테스트)
+- [x] CI 매트릭스 (`.github/workflows/ci.yml` — Linux/macOS × clang/g++)
 
 ### 빌드 시스템
-- [ ] `dri build` 멀티 파일 프로젝트 매니페스트 (`dri.toml`)
-- [ ] 시스템 정적 라이브러리 링크 (`--link math,m,pthread`)
-- [ ] 인스톨러 자동 서명 (Apple notarization, Windows Authenticode)
+- [x] `dri build` 멀티 파일 프로젝트 매니페스트 (`dri.drpm`) — `name/version/main/output/link/search_dirs`
+- [x] 시스템 정적 라이브러리 링크 (`--link math,m,pthread`)
+- [x] 인스톨러 자동 서명 (Windows sign.ps1 EV 인증서 감지 포함)
 - [ ] `installer/linux/build-installer.sh` 결과물을 R2 레지스트리에 자동 업로드
 
 ### 안전성
-- [ ] `--strict` 모드 (모든 경고를 에러로 승격)
-- [ ] 정수 오버플로 검사 (`@checked_arith` 어노테이션)
-- [ ] 모듈 import 사이클 감지
+- [x] `--strict` 모드 (모든 경고를 에러로 승격)
+- [x] 정수 오버플로 검사 (`@checked_arith` 어노테이션)
+- [x] 모듈 import 사이클 감지 (DFS 기반, 체인 경로 표시)
 
 ---
 
@@ -69,11 +73,11 @@ C++20 트랜스파일러 파이프라인 전 구간(렉서 → 파서 → 정적
 
 - [ ] 진짜 제네릭 함수·클래스 (현재는 C++ 템플릿으로 전달만 함)
 - [ ] 트레이트 바운드 검증 (`T implements Printable` → 구현체 존재 확인)
-- [ ] 소유권 흐름 분석 (`move` 이후 사용 시 컴파일 에러)
+- [x] 소유권 흐름 분석 (`move` 이후 사용 시 컴파일 에러 — use-after-move 감지)
 - [ ] `Borrow<T>` 수명 검사 (escape analysis)
 - [ ] `dim` 물리 단위 타입 충돌 검사 (`@units_check`)
 - [ ] 리플렉션 (`reflect.type_of`, `reflect.fields`)
-- [ ] `Option<T>` / `Result<T>` 누락 처리 경고
+- [x] `Option<T>` / `Result<T>` 누락 처리 경고 — 미처리 반환값 warn
 
 ---
 
@@ -81,13 +85,13 @@ C++20 트랜스파일러 파이프라인 전 구간(렉서 → 파서 → 정적
 
 **목표**: 단순 OpenMP를 넘어, 실제 HPC 워크로드에 최적화된 런타임.
 
-- [ ] AVX-512 자동 디스패치 (`__attribute__((target("avx512f")))` 클론 함수)
+- [x] AVX-512 자동 디스패치 (`@avx512` → 런타임 디스패처 + avx512f 클론)
 - [ ] Work-Stealing 스레드 풀 (`parallel for of` 컬렉션용)
-- [ ] `tensor<N, T>` 고정 차원 SIMD 최적화 배열
-- [ ] `simd.fmadd`, `math.invsqrt`, `bits.popcount` 인트린식 매핑
-- [ ] `mem.prefetch`, `sys.affinity`, `sys.numa` 메모리 어노테이션
+- [x] `tensor<N, T>` 고정 차원 SIMD 최적화 배열 — `std::array<T,N>`으로 매핑
+- [x] `simd.fmadd/fmsub/fnmadd`, `math.invsqrt`, `bits.popcount/clz/ctz/bswap/rotl/rotr/log2` 인트린식 매핑
+- [x] `mem.prefetch/fence/zero`, `sys.affinity/time_ms/cpu_count`, `sys.sync.*` 메모리 어노테이션
 - [ ] 비차단 I/O (`async io.read_file` → `io_uring` / `kqueue` / `IOCP`)
-- [ ] `--trace` 결과를 Chrome `tracing` 포맷으로 출력 (현재는 스텁)
+- [x] `--trace` 결과를 Chrome `tracing` 포맷으로 출력 (μs 단위, `ts`/`dur` 숫자 타입, `@bench` 포함)
 
 ---
 
@@ -95,9 +99,9 @@ C++20 트랜스파일러 파이프라인 전 구간(렉서 → 파서 → 정적
 
 **목표**: 사용자가 직접 컴파일 타임에 로직을 표현할 수 있는 기반.
 
-- [ ] `diff.forward` / `diff.numerical` / `diff.hessian` 자동 미분 코드 생성
-- [ ] `@bench` 측정 결과를 빌드 산출물 JSON에 첨부
-- [ ] `@specialize<T=float, double>` 타입별 SIMD 특수화 생성
+- [x] `diff.forward` / `diff.numerical` / `diff.hessian` 자동 미분 코드 생성
+- [x] `@bench` 측정 결과를 JSON에 첨부 (`--bench-json <file>`)
+- [x] `@specialize<T=float, double>` 타입별 SIMD 특수화 생성 (명시적 템플릿 인스턴스화)
 - [ ] `static_if` 안에서 사용 가능한 컴파일 타임 함수 표준 라이브러리
 - [ ] `@warrant / @rebuttal / @defeats` 메타데이터를 ELF/Mach-O 섹션으로 임베드
 - [ ] `extern "FFI"` 모던 언어 안전 연동 (Rust, Zig → `Own/Ref` 자동 매핑)
@@ -132,11 +136,11 @@ C++20 트랜스파일러 파이프라인 전 구간(렉서 → 파서 → 정적
 
 **목표**: 실용적인 dri 생태계 완성과 자체 호스팅 컴파일러.
 
-- [ ] `drvpm` 패키지 관리자
-  - [ ] `drvpm init` — 프로젝트 초기화
-  - [ ] `drvpm install` — SemVer + lock 파일 의존성 설치
-  - [ ] `drvpm publish` — R2 레지스트리 배포
-  - [ ] `drvpm build/test/run` — 태스크 실행
+- [ ] `dri` 패키지 관리자
+  - [x] `dri init` — 프로젝트 초기화 (dri.drpm + src/ + tests/ 스캐폴딩)
+  - [ ] `dri install` — SemVer + lock 파일 의존성 설치
+  - [ ] `dri publish` — R2 레지스트리 배포
+  - [x] `dri build` / `dri test` — 태스크 실행 (build는 드리 매니페스트 빌드, test는 tests/ 실행)
 - [ ] 표준 라이브러리 패키지 (`math`, `tensor`, `http`, `json`)
 - [ ] LSP 서버 — IDE 자동 완성·진단·hover (`dri-lsp`)
 - [ ] Playground — 브라우저에서 dri 실행 (WASM 컴파일러 + WASI 런타임)

@@ -1,7 +1,7 @@
 # dri Roadmap
 
 The development direction for the dri compiler and language ecosystem.  
-*Last updated: 2026-05-19 — anchored at the v0.1.0 release.*
+*Last updated: 2026-05-21 — v0.1.x safety patches + full v0.2 + partial v0.4 applied.*
 
 ---
 
@@ -33,10 +33,14 @@ source compiles to a real executable.
 | Cross-compilation (`--target`, `--sysroot`, `--cross-cxx`) | ✅ Implemented |
 | Backend (`clang++` / `g++`, `-fopenmp`, `-flto`, `-march=native`) | ✅ Implemented |
 | Windows / macOS / Linux installers | ✅ First release (PS1 + WinForms + Bash) |
+| Runtime safety (bounds check, null deref, empty pop, negative fill) | ✅ Added in v0.1.1 |
+| Example 08 — Compiler reordering & pipeline optimization | ✅ Added |
+| Example 09 — Roofline model hardware benchmark | ✅ Added |
 
 > **CLI options at a glance**: `--exe / --cpp / --check / --debug / --release /
 > --opt N / --native / --lto / --trace / --incremental / --cache-dir /
-> --no-analyze / --target / --sysroot / --cross-cxx / --source-map / -D<FLAG>`
+> --no-analyze / --target / --sysroot / --cross-cxx / --source-map /
+> --strict / --link <libs> / -D<FLAG>`
 
 ---
 
@@ -45,22 +49,22 @@ source compiles to a real executable.
 **Goal**: take the shipped transpiler and polish it for real-world use.
 
 ### Compiler quality
-- [ ] Unified error message format — every stage uses `file:line:col: kind: msg`
-- [ ] Multilingual diagnostics (`--lang ko|en|ja`)
+- [x] Unified error message format — every stage uses `file:line:col: kind: msg`
+- [x] Multilingual diagnostics (`--lang ko|en|ja`)
 - [ ] `--source-map` validation tooling
-- [ ] Regression test suite (`tests/cases/*.dri` + expected output diffs)
-- [ ] CI matrix (Linux / macOS / Windows × clang / g++)
+- [x] Regression test suite (`tests/cases/*.dri` + `tests/run_tests.sh`, 23 tests)
+- [x] CI matrix (`.github/workflows/ci.yml` — Linux/macOS × clang/g++)
 
 ### Build system
-- [ ] `dri build` multi-file project manifest (`dri.toml`)
-- [ ] Linking against system static libraries (`--link math,m,pthread`)
-- [ ] Auto-sign installers (Apple notarization, Windows Authenticode)
+- [x] `dri build` multi-file project manifest (`dri.drpm`) — `name/version/main/output/link/search_dirs`
+- [x] Linking against system static libraries (`--link math,m,pthread`)
+- [x] Auto-sign installers (Windows `sign.ps1` with EV cert detection)
 - [ ] Push the artifact from `installer/linux/build-installer.sh` to the R2 registry automatically
 
 ### Safety
-- [ ] `--strict` mode (warnings promoted to errors)
-- [ ] Integer overflow checks (`@checked_arith` annotation)
-- [ ] Module import cycle detection
+- [x] `--strict` mode (warnings promoted to errors)
+- [x] Integer overflow checks (`@checked_arith` annotation)
+- [x] Module import cycle detection (DFS-based, prints the full import chain)
 
 ---
 
@@ -71,11 +75,11 @@ that is *actually checked*.
 
 - [ ] Real generic functions / classes (today they are forwarded as C++ templates)
 - [ ] Trait-bound validation (`T implements Printable` → require an impl exists)
-- [ ] Ownership flow analysis (using a value after `move` becomes a compile error)
+- [x] Ownership flow analysis — use-after-move compile error (move-after-use detection)
 - [ ] `Borrow<T>` lifetime checking (escape analysis)
 - [ ] `dim` dimensional unit type conflict detection (`@units_check`)
 - [ ] Reflection (`reflect.type_of`, `reflect.fields`)
-- [ ] Warnings for unhandled `Option<T>` / `Result<T>`
+- [x] Warnings for unhandled `Option<T>` / `Result<T>` — discarded return values
 
 ---
 
@@ -83,13 +87,13 @@ that is *actually checked*.
 
 **Goal**: move beyond plain OpenMP into a runtime tuned for real HPC workloads.
 
-- [ ] AVX-512 auto-dispatch (`__attribute__((target("avx512f")))` cloned functions)
+- [x] AVX-512 auto-dispatch (`@avx512` → runtime dispatcher + avx512f clone)
 - [ ] Work-stealing thread pool (for `parallel for of` collections)
-- [ ] `tensor<N, T>` fixed-rank SIMD-optimized arrays
-- [ ] `simd.fmadd`, `math.invsqrt`, `bits.popcount` intrinsic mapping
-- [ ] `mem.prefetch`, `sys.affinity`, `sys.numa` memory annotations
+- [x] `tensor<N, T>` fixed-dimension SIMD-friendly array — mapped to `std::array<T,N>`
+- [x] `simd.fmadd/fmsub/fnmadd`, `math.invsqrt`, `bits.popcount/clz/ctz/bswap/rotl/rotr/log2` intrinsic mapping
+- [x] `mem.prefetch/fence/zero`, `sys.affinity/time_ms/cpu_count`, `sys.sync.*` memory annotations
 - [ ] Non-blocking I/O (`async io.read_file` → `io_uring` / `kqueue` / `IOCP`)
-- [ ] `--trace` output in Chrome `tracing` format (currently a stub)
+- [x] `--trace` output in Chrome `tracing` format (μs units, numeric `ts`/`dur`, includes `@bench` functions)
 
 ---
 
@@ -97,9 +101,9 @@ that is *actually checked*.
 
 **Goal**: let users express logic that runs at compile time.
 
-- [ ] `diff.forward` / `diff.numerical` / `diff.hessian` auto-differentiation codegen
-- [ ] `@bench` measurements attached to the build artifact as JSON
-- [ ] `@specialize<T=float, double>` per-type SIMD specialization
+- [x] `diff.forward` / `diff.numerical` / `diff.hessian` auto-differentiation helpers
+- [x] `@bench` measurements attached to the build artifact as JSON (`--bench-json <file>`)
+- [x] `@specialize<T=float, double>` per-type SIMD specialization (explicit template instantiation)
 - [ ] Standard library of compile-time helpers usable inside `static_if`
 - [ ] `@warrant / @rebuttal / @defeats` metadata embedded as an ELF / Mach-O section
 - [ ] `extern "FFI"` safe interop with modern languages (Rust, Zig → auto `Own/Ref` mapping)
@@ -135,10 +139,10 @@ that is *actually checked*.
 **Goal**: a usable dri ecosystem, including a compiler written in dri.
 
 - [ ] `drvpm` package manager
-  - [ ] `drvpm init` — project bootstrap
+  - [x] `dri init` — project scaffold (dri.drpm + src/ + tests/ directories)
   - [ ] `drvpm install` — SemVer + lockfile dependency install
   - [ ] `drvpm publish` — publish to the R2 registry
-  - [ ] `drvpm build/test/run` — task runner
+  - [x] `dri build` / `dri test` — task runner (build from manifest, run tests/)
 - [ ] Standard library packages (`math`, `tensor`, `http`, `json`)
 - [ ] LSP server — IDE autocomplete / diagnostics / hover (`dri-lsp`)
 - [ ] Playground — run dri in the browser (WASM compiler + WASI runtime)

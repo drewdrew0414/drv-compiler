@@ -1,7 +1,7 @@
 # dri ロードマップ
 
 dri コンパイラおよび言語エコシステムの開発方針をまとめます。  
-*最終更新: 2026-05-19 — v0.1.0 リリース時点*
+*最終更新: 2026-05-21 — v0.1.x 安全性パッチ + v0.2 一部適用*
 
 ---
 
@@ -35,7 +35,8 @@ C++20 トランスパイラの全パイプライン (Lexer → Parser → 静的
 
 > **CLI オプション一覧**: `--exe / --cpp / --check / --debug / --release /
 > --opt N / --native / --lto / --trace / --incremental / --cache-dir /
-> --no-analyze / --target / --sysroot / --cross-cxx / --source-map / -D<FLAG>`
+> --no-analyze / --target / --sysroot / --cross-cxx / --source-map /
+> --strict / --link <libs> / -D<FLAG>`
 
 ---
 
@@ -44,22 +45,22 @@ C++20 トランスパイラの全パイプライン (Lexer → Parser → 静的
 **目標**: リリースされたトランスパイラを実運用に耐える品質に磨き上げる。
 
 ### コンパイラ品質
-- [ ] エラーメッセージの統一 — 全段階で `file:line:col: kind: msg` を遵守
-- [ ] 診断メッセージの多言語化 (`--lang ko|en|ja`)
+- [x] エラーメッセージの統一 — 全段階で `file:line:col: kind: msg` を遵守
+- [x] 診断メッセージの多言語化 (`--lang ko|en|ja`)
 - [ ] `--source-map` 出力の検証ツール
-- [ ] 回帰テストスイート (`tests/cases/*.dri` + 期待出力比較)
-- [ ] CI マトリクス (Linux / macOS / Windows × clang / g++)
+- [x] 回帰テストスイート (`tests/cases/*.dri` + `tests/run_tests.sh`、21テスト)
+- [x] CI マトリクス (`.github/workflows/ci.yml` — Linux/macOS × clang/g++)
 
 ### ビルドシステム
-- [ ] `dri build` マルチファイルプロジェクトマニフェスト (`dri.toml`)
-- [ ] システム静的ライブラリのリンク (`--link math,m,pthread`)
-- [ ] インストーラの自動署名 (Apple notarization、Windows Authenticode)
+- [x] `dri build` マルチファイルプロジェクトマニフェスト (`dri.drpm`) — `name/version/main/output/link/search_dirs`
+- [x] システム静的ライブラリのリンク (`--link math,m,pthread`)
+- [x] インストーラの自動署名 (Windows `sign.ps1` に EV 証明書検出を追加)
 - [ ] `installer/linux/build-installer.sh` 成果物の R2 レジストリへの自動アップロード
 
 ### 安全性
-- [ ] `--strict` モード (警告をエラーに昇格)
-- [ ] 整数オーバーフローチェック (`@checked_arith` アノテーション)
-- [ ] モジュールインポートサイクル検出
+- [x] `--strict` モード (警告をエラーに昇格)
+- [x] 整数オーバーフローチェック (`@checked_arith` アノテーション)
+- [x] モジュールインポートサイクル検出 (DFS ベース、インポートチェーンを表示)
 
 ---
 
@@ -69,11 +70,11 @@ C++20 トランスパイラの全パイプライン (Lexer → Parser → 静的
 
 - [ ] 真のジェネリック関数・クラス (現状は C++ テンプレートに渡すのみ)
 - [ ] トレイト境界の検証 (`T implements Printable` → 実装が存在することを要求)
-- [ ] 所有権フロー解析 (`move` 後の使用はコンパイルエラー)
+- [x] 所有権フロー解析 (`move` 後の使用時にコンパイルエラー — use-after-move 検出)
 - [ ] `Borrow<T>` ライフタイム検査 (エスケープ解析)
 - [ ] `dim` 物理単位型の衝突検出 (`@units_check`)
 - [ ] リフレクション (`reflect.type_of`, `reflect.fields`)
-- [ ] `Option<T>` / `Result<T>` の未処理に対する警告
+- [x] `Option<T>` / `Result<T>` の未処理に対する警告 — 破棄時に warn
 
 ---
 
@@ -81,13 +82,13 @@ C++20 トランスパイラの全パイプライン (Lexer → Parser → 静的
 
 **目標**: 単純な OpenMP を超え、実際の HPC ワークロード向けに最適化されたランタイムを実現。
 
-- [ ] AVX-512 自動ディスパッチ (`__attribute__((target("avx512f")))` クローン関数)
+- [x] AVX-512 自動ディスパッチ (`@avx512` → ランタイムディスパッチャー + avx512f クローン)
 - [ ] Work-Stealing スレッドプール (`parallel for of` コレクション用)
 - [ ] `tensor<N, T>` 固定階数 SIMD 最適化配列
-- [ ] `simd.fmadd`, `math.invsqrt`, `bits.popcount` のインライン化
-- [ ] `mem.prefetch`, `sys.affinity`, `sys.numa` メモリアノテーション
+- [x] `simd.fmadd/fmsub/fnmadd`, `math.invsqrt`, `bits.popcount/clz/ctz/bswap/rotl/rotr/log2` インライン化
+- [x] `mem.prefetch/fence/zero`, `sys.affinity/time_ms/cpu_count`, `sys.sync.*` メモリアノテーション
 - [ ] ノンブロッキング I/O (`async io.read_file` → `io_uring` / `kqueue` / `IOCP`)
-- [ ] `--trace` 出力を Chrome `tracing` フォーマットに対応 (現状はスタブ)
+- [x] `--trace` 出力を Chrome `tracing` フォーマットに対応 (μs 単位、数値型 `ts`/`dur`、`@bench` 関数を含む)
 
 ---
 

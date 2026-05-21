@@ -1,0 +1,15 @@
+module lambdas;
+# lambda syntax: |type param| -> expr  (typed params, arrow ->)
+list<int> nums = [1, 2, 3, 4, 5];
+list<int> doubled = lst.map(nums, |int x| -> x * 2);
+list<int> evens   = lst.filter(nums, |int x| -> x % 2 == 0);
+int total         = lst.reduce(nums, 0, |int acc, int x| -> acc + x);
+print(doubled[0]);
+print(doubled[4]);
+print(lst.size(evens));
+print(total);
+
+# named function passed as higher-order argument
+int double_it(int x) { return x * 2; }
+list<int> d2 = lst.map(nums, double_it);
+print(d2[2]);

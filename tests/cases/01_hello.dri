@@ -1,0 +1,5 @@
+module hello;
+print("Hello, dri!");
+print(42);
+print(3.14);
+print(true);

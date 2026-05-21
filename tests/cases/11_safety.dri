@@ -1,0 +1,29 @@
+module safety;
+# bounds check — OOB access throws out_of_range
+try {
+    list<int> a = [1, 2, 3];
+    int v = a[10];
+} catch (e) {
+    print("oob caught");
+}
+
+# null deref — Own<T> null throws runtime_error
+try {
+    Own<int> p = null;
+    int v = *p;
+} catch (e) {
+    print("null deref caught");
+}
+
+# @checked_arith overflow detection
+@checked_arith
+int overflow_add(int a, int b) { return a + b; }
+
+try {
+    int big = 2147483647;
+    int r = overflow_add(big, 1);
+    print(r);
+} catch (e) {
+    print("overflow caught");
+}
+print("safety ok");

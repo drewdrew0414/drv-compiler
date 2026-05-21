@@ -1,0 +1,12 @@
+module strings;
+String s = "Hello, World!";
+print(str.length(s));
+print(str.upper(s));
+print(str.lower(s));
+print(str.contains(s, "World"));
+print(str.replace(s, "World", "dri"));
+list<String> parts = str.split("a,b,c", ",");
+print(lst.size(parts));
+print(str.join(parts, "-"));
+print(str.from_int(42));
+print(str.from_float(3.14));
