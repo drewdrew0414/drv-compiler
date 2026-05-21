@@ -1,6 +1,7 @@
 #pragma once
 #include "ast.h"
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -35,6 +36,8 @@ struct AnalyzerDiag {
 //   2. Aliasing verifier    — validates @noalias annotations at call sites
 //   3. @packed inheritance  — error if @packed class uses extends
 //   4. atomic<string> check — warns and prepares string atomic rewrite marker
+//   5. Move-after-use check — error if a variable is used after move()
+//   6. Unchecked result     — warn if Option<T>/Result<T> return value is discarded
 // ─────────────────────────────────────────────────────────────────────────────
 class Analyzer {
 public:
@@ -94,6 +97,19 @@ private:
 
     // ── Pass 4: atomic<string> ────────────────────────────────────────────────
     void checkAtomicString(const VarDecl& v);
+
+    // ── Pass 5: move-after-use ────────────────────────────────────────────────
+    // moved_vars: maps var name → line where it was moved
+    void checkMoveInBody(const StmtList& stmts,
+                         std::unordered_map<std::string,int>& moved);
+    void checkMoveExpr  (const Expr& e, int line,
+                         std::unordered_map<std::string,int>& moved);
+
+    // ── Pass 6: unchecked Option/Result ──────────────────────────────────────
+    // Tracks which user-defined functions return Option<T> or Result<T>
+    std::unordered_set<std::string> result_returning_funcs_;
+    void collectResultFuncs(const Program& prog);
+    void checkUncheckedResult(const StmtList& stmts);
 
     // ── Helpers ───────────────────────────────────────────────────────────────
     static std::string exprVarName(const Expr& e);  // returns "" if not a simple var

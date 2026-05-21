@@ -28,6 +28,14 @@ struct CompileOptions {
     std::string  cross_cxx;           // --cross-cxx (override compiler binary)
     // ── Source mapping ───────────────────────────────────────────────────
     std::string  source_map_file;     // --source-map <file.json>
+    // ── Strictness & linking ─────────────────────────────────────────────
+    bool         strict{false};             // --strict: warnings become errors
+    std::vector<std::string> link_libs;     // --link lib1,lib2 → -llib1 -llib2
+    // ── Module search paths ──────────────────────────────────────────────
+    std::vector<std::string> search_dirs;   // extra dirs for `use` resolution
+    // ── i18n ─────────────────────────────────────────────────────────────
+    std::string  lang;                      // --lang ko|en|ja (default: en)
+    std::string  bench_json_file;           // --bench-json <file>
 };
 
 // Describes which compilation phase produced the failure.

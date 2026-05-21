@@ -43,6 +43,8 @@ std::string Analyzer::exprVarName(const Expr& e) {
 bool Analyzer::analyze(const Program& prog) {
     // Pass 2 setup: collect function signatures with @noalias params
     collectFuncInfo(prog);
+    // Pass 6 setup: collect functions returning Option/Result
+    collectResultFuncs(prog);
 
     // Walk all top-level statements
     for (auto& s : prog.stmts) {
@@ -64,7 +66,25 @@ bool Analyzer::analyze(const Program& prog) {
 
         // Pass 2: aliasing at statement level
         analyzeStmtAlias(*s);
+
+        // Pass 5: move-after-use (inside function bodies)
+        if (auto* fd = dynamic_cast<const FuncDecl*>(s.get())) {
+            std::unordered_map<std::string,int> moved;
+            checkMoveInBody(fd->body, moved);
+        }
+
+        // Pass 6: unchecked Option/Result in function bodies
+        if (auto* fd = dynamic_cast<const FuncDecl*>(s.get()))
+            checkUncheckedResult(fd->body);
     }
+
+    // Pass 5 at top level: detect move-after-use in module-level code
+    {
+        std::unordered_map<std::string,int> moved;
+        checkMoveInBody(prog.stmts, moved);
+    }
+    // Pass 6 at top level: unchecked Option/Result in module-level code
+    checkUncheckedResult(prog.stmts);
 
     return !hasErrors();
 }
@@ -296,6 +316,133 @@ void Analyzer::checkAtomicString(const VarDecl& v) {
             "' is rewritten internally as atomic<char*> pointer wrapper — "
             "string contents are NOT atomically updated, only the pointer; "
             "consider using a mutex for full string atomicity");
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pass 5: move-after-use detection
+// ─────────────────────────────────────────────────────────────────────────────
+
+void Analyzer::checkMoveExpr(const Expr& e, int line,
+                              std::unordered_map<std::string,int>& moved) {
+    // If this expression reads a moved variable, error
+    if (auto* id = dynamic_cast<const IdentExpr*>(&e)) {
+        auto it = moved.find(id->name);
+        if (it != moved.end()) {
+            emitError(line > 0 ? line : it->second,
+                "use-after-move: variable '" + id->name +
+                "' was moved at line " + std::to_string(it->second) +
+                " and cannot be used again (assign a new value first)");
+        }
+        return;
+    }
+    // Detect move(x) → mark x as moved
+    if (auto* mv = dynamic_cast<const MoveExpr*>(&e)) {
+        if (auto* id = dynamic_cast<const IdentExpr*>(mv->operand.get())) {
+            moved[id->name] = line;
+        }
+        return; // don't recurse into the moved operand
+    }
+    // Recurse
+    if (auto* bin = dynamic_cast<const BinaryExpr*>(&e)) {
+        // Left side of assignment: being written, not read → clear moved state
+        if (bin->op == "=" || bin->op == "+=" || bin->op == "-=" ||
+            bin->op == "*=" || bin->op == "/=" || bin->op == "%=") {
+            if (auto* id = dynamic_cast<const IdentExpr*>(bin->left.get()))
+                moved.erase(id->name);  // re-assignment clears moved state
+            if (bin->right) checkMoveExpr(*bin->right, line, moved);
+            return;
+        }
+        if (bin->left)  checkMoveExpr(*bin->left,  line, moved);
+        if (bin->right) checkMoveExpr(*bin->right, line, moved);
+    }
+    if (auto* un = dynamic_cast<const UnaryExpr*>(&e))
+        if (un->operand) checkMoveExpr(*un->operand, line, moved);
+    if (auto* call = dynamic_cast<const CallExpr*>(&e)) {
+        if (call->callee) checkMoveExpr(*call->callee, line, moved);
+        for (auto& a : call->args) if (a) checkMoveExpr(*a, line, moved);
+    }
+    if (auto* idx = dynamic_cast<const IndexExpr*>(&e)) {
+        if (idx->object) checkMoveExpr(*idx->object, line, moved);
+        if (idx->index)  checkMoveExpr(*idx->index,  line, moved);
+    }
+    if (auto* mem = dynamic_cast<const MemberExpr*>(&e))
+        if (mem->object) checkMoveExpr(*mem->object, line, moved);
+}
+
+void Analyzer::checkMoveInBody(const StmtList& stmts,
+                                std::unordered_map<std::string,int>& moved) {
+    for (auto& s : stmts) {
+        if (!s) continue;
+        int line = s->line;
+
+        if (auto* vd = dynamic_cast<const VarDecl*>(s.get())) {
+            // VarDecl with initializer: check the init expr, then clear moved for the new var
+            if (vd->init) checkMoveExpr(*vd->init, line, moved);
+            moved.erase(vd->name);  // new binding is always valid
+        } else if (auto* es = dynamic_cast<const ExprStmt*>(s.get())) {
+            if (es->expr) checkMoveExpr(*es->expr, line, moved);
+        } else if (auto* ret = dynamic_cast<const ReturnStmt*>(s.get())) {
+            if (ret->value) checkMoveExpr(*ret->value, line, moved);
+        } else if (auto* ifs = dynamic_cast<const IfStmt*>(s.get())) {
+            if (ifs->cond) checkMoveExpr(*ifs->cond, line, moved);
+            // Branch-scoped: take a copy for each branch
+            auto moved_then = moved, moved_else = moved;
+            checkMoveInBody(ifs->then_body, moved_then);
+            checkMoveInBody(ifs->else_body, moved_else);
+            // After if: union of moved from both branches
+            for (auto& [v,l] : moved_then) moved[v] = l;
+            for (auto& [v,l] : moved_else) moved[v] = l;
+        } else if (auto* wh = dynamic_cast<const WhileStmt*>(s.get())) {
+            if (wh->cond) checkMoveExpr(*wh->cond, line, moved);
+            checkMoveInBody(wh->body, moved);
+        } else if (auto* fr = dynamic_cast<const ForRangeStmt*>(s.get())) {
+            checkMoveInBody(fr->body, moved);
+        } else if (auto* fe = dynamic_cast<const ForEachStmt*>(s.get())) {
+            checkMoveInBody(fe->body, moved);
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pass 6: unchecked Option<T> / Result<T> return values
+// ─────────────────────────────────────────────────────────────────────────────
+
+void Analyzer::collectResultFuncs(const Program& prog) {
+    for (auto& s : prog.stmts) {
+        auto* fd = dynamic_cast<const FuncDecl*>(s.get());
+        if (!fd) continue;
+        const std::string& rt = fd->ret_type.name;
+        if (rt == "Option" || rt == "Result" || rt == "Some" || rt == "Ok" || rt == "Err")
+            result_returning_funcs_.insert(fd->name);
+    }
+}
+
+void Analyzer::checkUncheckedResult(const StmtList& stmts) {
+    for (auto& s : stmts) {
+        if (!s) continue;
+        // An ExprStmt whose expression is a bare function call that returns Option/Result
+        if (auto* es = dynamic_cast<const ExprStmt*>(s.get())) {
+            if (auto* call = dynamic_cast<const CallExpr*>(es->expr.get())) {
+                std::string callee;
+                if (auto* id = dynamic_cast<const IdentExpr*>(call->callee.get()))
+                    callee = id->name;
+                if (!callee.empty() && result_returning_funcs_.count(callee)) {
+                    emitWarning(s->line,
+                        "unchecked result: return value of '" + callee +
+                        "' (Option/Result) is discarded — handle with match or unwrap");
+                }
+            }
+        }
+        // Recurse
+        auto recurse = [&](const StmtList& body) { checkUncheckedResult(body); };
+        if (auto* ifs = dynamic_cast<const IfStmt*>(s.get())) {
+            recurse(ifs->then_body); recurse(ifs->else_body);
+        }
+        if (auto* wh = dynamic_cast<const WhileStmt*>(s.get())) recurse(wh->body);
+        if (auto* fr = dynamic_cast<const ForRangeStmt*>(s.get())) recurse(fr->body);
+        if (auto* fe = dynamic_cast<const ForEachStmt*>(s.get())) recurse(fe->body);
+        if (auto* fd = dynamic_cast<const FuncDecl*>(s.get())) recurse(fd->body);
     }
 }
 

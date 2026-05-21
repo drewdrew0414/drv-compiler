@@ -219,11 +219,16 @@ bool Compiler::invokeBackend(const std::string& cpp_path, std::string& captured_
     const std::string out_file =
         (fs::temp_directory_path() / "__drv_backend_out__").string();
 
+    std::string link_flags;
+    for (auto& lib : opts_.link_libs)
+        link_flags += " -l" + lib;
+
     std::string cmd = q(cxx) + " " + flags + " " + q(cpp_path) +
                       " -o " + q(opts_.output_exe) +
 #ifndef _WIN32
                       " -lm "
 #endif
+                      + link_flags +
                       " >" + q(out_file) + " 2>&1";
     int ret = std::system(cmd.c_str());
 
@@ -304,39 +309,55 @@ CompileResult Compiler::compile() {
         {
             fs::path input_dir = fs::path(opts_.input_file).parent_path();
             std::vector<fs::path> include_dirs = { input_dir, fs::path(".") };
+            for (auto& d : opts_.search_dirs)
+                include_dirs.push_back(fs::path(d));
             std::unordered_set<std::string> loaded;
             std::vector<StmtPtr> prepended;
             bool module_failed = false;
 
-            for (auto& s : program.stmts) {
-                auto* ud = dynamic_cast<const UseDecl*>(s.get());
-                if (!ud) continue;
-                if (!loaded.insert(ud->module).second) continue;
+            // Cycle detection: track the import chain (DFS stack)
+            // root module name derived from input filename
+            std::string root_mod = fs::path(opts_.input_file).stem().string();
+            std::vector<std::string> import_stack = { root_mod };
 
-                // Guard against path-traversal: module names must be simple
-                // identifiers (alphanumeric + underscore).  Reject anything
-                // that could resolve outside the project directory.
-                if (!isValidModuleName(ud->module)) {
+            // Recursive lambda to load a module and its transitive dependencies
+            std::function<void(const std::string&)> loadModule;
+            loadModule = [&](const std::string& mod_name) {
+                if (!isValidModuleName(mod_name)) {
                     result.errors.push_back("dri: module name contains illegal "
-                        "characters (path traversal attempt?): '" +
-                        ud->module + "'");
+                        "characters (path traversal attempt?): '" + mod_name + "'");
                     module_failed = true;
-                    continue;
+                    return;
                 }
+
+                // Cycle check BEFORE loaded check: import_stack holds the active DFS path
+                for (auto& anc : import_stack) {
+                    if (anc == mod_name) {
+                        std::string chain;
+                        for (auto& m : import_stack) chain += m + " → ";
+                        chain += mod_name;
+                        result.errors.push_back("dri: circular import detected: " + chain);
+                        result.error_kind = ErrorKind::Parse;
+                        module_failed = true;
+                        return;
+                    }
+                }
+
+                if (!loaded.insert(mod_name).second) return; // already loaded (no cycle)
 
                 fs::path resolved;
                 for (auto& dir : include_dirs) {
-                    fs::path cand = dir / (ud->module + ".dri");
+                    fs::path cand = dir / (mod_name + ".dri");
                     std::error_code ec;
                     if (fs::exists(cand, ec)) { resolved = cand; break; }
                 }
-                if (resolved.empty()) continue; // not found → defer to codegen/link
+                if (resolved.empty()) return; // not found → defer to link stage
 
                 std::ifstream mf(resolved, std::ios::binary);
                 if (!mf) {
                     result.errors.push_back(resolved.string() + ": error: cannot open module");
                     module_failed = true;
-                    continue;
+                    return;
                 }
                 std::string msrc{std::istreambuf_iterator<char>(mf), {}};
 
@@ -346,7 +367,7 @@ CompileResult Compiler::compile() {
                     for (auto& e : ml.errors()) result.errors.push_back(e);
                     result.error_kind = ErrorKind::Lex;
                     module_failed = true;
-                    continue;
+                    return;
                 }
                 Parser mp(std::move(mtoks), resolved.string());
                 auto mprog = mp.parse();
@@ -354,12 +375,27 @@ CompileResult Compiler::compile() {
                     for (auto& e : mp.errors()) result.errors.push_back(e);
                     result.error_kind = ErrorKind::Parse;
                     module_failed = true;
-                    continue;
+                    return;
                 }
-                // Move module decls into the prepend buffer (preserves
-                // declaration order across multiple modules)
+
+                // Recursively load transitive imports
+                import_stack.push_back(mod_name);
+                for (auto& ms : mprog.stmts) {
+                    if (auto* sub = dynamic_cast<const UseDecl*>(ms.get()))
+                        loadModule(sub->module);
+                    if (module_failed) break;
+                }
+                import_stack.pop_back();
+
                 for (auto& ms : mprog.stmts)
                     prepended.push_back(std::move(ms));
+            };
+
+            for (auto& s : program.stmts) {
+                auto* ud = dynamic_cast<const UseDecl*>(s.get());
+                if (!ud) continue;
+                loadModule(ud->module);
+                if (module_failed) break;
             }
 
             if (module_failed) return result;
@@ -423,6 +459,7 @@ CompileResult Compiler::compile() {
         cg_opts.trace_file = opts_.trace_file;
         cg_opts.source_map_file = opts_.source_map_file;
         cg_opts.target_triple = opts_.target_triple;
+        cg_opts.bench_json_file = opts_.bench_json_file;
 
         Codegen cg(cg_opts);
         result.cpp_source = cg.emit(program);

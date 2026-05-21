@@ -17,6 +17,7 @@ struct CodegenOptions {
     std::string trace_file;             // --trace output (Chrome DevTools JSON)
     std::string source_map_file;        // --source-map JSON output
     std::string target_triple;          // cross-compilation target
+    std::string bench_json_file;        // --bench-json JSON output
 };
 
 // Source map entry: generated C++ line → original .dri location
@@ -60,6 +61,8 @@ private:
     // @trace state
     bool tracing_{false};
     std::string tracing_func_;
+    // @checked_arith state: emit overflow-checked +/-/* inside annotated functions
+    bool in_checked_arith_{false};
     // source map: cpp line → dri location
     std::vector<SourceMapEntry> source_map_;
     int current_cpp_line_{1};

@@ -63,6 +63,41 @@ public:
     }
 };
 
+// ── i18n ─────────────────────────────────────────────────────────────────────
+static std::string g_lang = "en";  // set from --lang option
+
+struct LangStrings {
+    const char* error;
+    const char* warning;
+    const char* note;
+    const char* generated_errors;
+    const char* generated_warnings;
+    const char* build_failed;
+    const char* build_ok;
+};
+
+static const LangStrings LANG_EN = {
+    "error", "warning", "note",
+    "error(s) generated.", "warning(s) generated.",
+    "build failed.", "build succeeded:"
+};
+static const LangStrings LANG_KO = {
+    "오류", "경고", "알림",
+    "개 오류 발생.", "개 경고 발생.",
+    "빌드 실패.", "빌드 성공:"
+};
+static const LangStrings LANG_JA = {
+    "エラー", "警告", "注意",
+    "個のエラーが発生しました。", "個の警告が発生しました。",
+    "ビルド失敗。", "ビルド成功:"
+};
+
+static const LangStrings& getLang() {
+    if (g_lang == "ko") return LANG_KO;
+    if (g_lang == "ja") return LANG_JA;
+    return LANG_EN;
+}
+
 // ── Diagnostic string parser ──────────────────────────────────────────────────
 // Parses "file:line:col: level: message" (Unix paths, no ':' in filename).
 struct Diag {
@@ -74,7 +109,7 @@ struct Diag {
 static Diag parseDiag(const std::string& s) {
     Diag d;
     d.message = s;
-    // Scan for the first ":digits:digits: word: " pattern
+    // Scan for "file:line:col: level: msg"  OR  "file:line: level: msg"
     for (size_t i = 0; i < s.size(); ++i) {
         if (s[i] != ':') continue;
         size_t j = i + 1;
@@ -84,12 +119,19 @@ static Diag parseDiag(const std::string& s) {
         int ln = std::stoi(s.substr(ln0, j - ln0));
         if (j >= s.size() || s[j] != ':') continue;
         ++j;
-        size_t cn0 = j;
-        while (j < s.size() && std::isdigit((unsigned char)s[j])) ++j;
-        if (cn0 == j) continue;
-        int cn = std::stoi(s.substr(cn0, j - cn0));
-        if (j + 1 >= s.size() || s[j] != ':' || s[j+1] != ' ') continue;
-        j += 2;
+
+        int cn = 1;
+        // Optional column number
+        if (j < s.size() && std::isdigit((unsigned char)s[j])) {
+            size_t cn0 = j;
+            while (j < s.size() && std::isdigit((unsigned char)s[j])) ++j;
+            cn = std::stoi(s.substr(cn0, j - cn0));
+            if (j >= s.size() || s[j] != ':') continue;
+            ++j;
+        }
+
+        if (j >= s.size() || s[j] != ' ') continue;
+        ++j;
         size_t lv0 = j;
         while (j < s.size() && std::isalpha((unsigned char)s[j])) ++j;
         std::string lv = s.substr(lv0, j - lv0);
@@ -184,9 +226,12 @@ static void printDiag(const std::string& msg, SourceCache& cache,
         return;
     }
 
-    // "file:line:col: error: message"
+    // "file:line:col: error: message" — with i18n level label
+    const auto& L = getLang();
+    const char* lv_label = (d.level == "error")   ? L.error :
+                           (d.level == "warning")  ? L.warning : L.note;
     std::cerr << C.bold << d.file << ":" << d.line << ":" << d.col << ": "
-              << lvl_color << d.level << ": "
+              << lvl_color << lv_label << ": "
               << C.reset << C.bold << d.message << C.reset << '\n';
 
     // Source context
@@ -207,12 +252,333 @@ static void printDiag(const std::string& msg, SourceCache& cache,
     }
 }
 
+// ── dri.drpm manifest parser ─────────────────────────────────────────────────
+// Supports a simple subset of TOML:
+//   key = "value"
+//   key = ["a", "b", "c"]
+//   key = true/false
+//   [section]
+struct DrpmManifest {
+    std::string name;
+    std::string version;
+    std::string main_file  = "src/main.dri";
+    std::string output;
+    bool        release{false};
+    bool        debug_build{false};
+    int         opt_level{1};
+    std::vector<std::string> link_libs;
+    std::vector<std::string> search_dirs;
+    std::vector<std::string> defines;
+};
+
+static std::string drpmTrim(const std::string& s) {
+    size_t a = s.find_first_not_of(" \t\r\n");
+    if (a == std::string::npos) return "";
+    size_t b = s.find_last_not_of(" \t\r\n");
+    return s.substr(a, b - a + 1);
+}
+
+static std::vector<std::string> drpmParseArray(const std::string& s) {
+    // Parses ["a", "b", "c"] → {"a","b","c"}
+    std::vector<std::string> out;
+    size_t i = s.find('[');
+    if (i == std::string::npos) {
+        // single unquoted value
+        auto t = drpmTrim(s);
+        if (!t.empty() && t[0]=='"') t = t.substr(1, t.size()-2);
+        if (!t.empty()) out.push_back(t);
+        return out;
+    }
+    ++i;
+    while (i < s.size()) {
+        size_t q = s.find('"', i);
+        if (q == std::string::npos) break;
+        size_t q2 = s.find('"', q+1);
+        if (q2 == std::string::npos) break;
+        out.push_back(s.substr(q+1, q2-q-1));
+        i = q2 + 1;
+    }
+    return out;
+}
+
+static bool parseDrpm(const std::string& path, DrpmManifest& m, std::string& err) {
+    std::ifstream f(path);
+    if (!f) { err = "cannot open: " + path; return false; }
+    std::string section;
+    std::string line;
+    int lineno = 0;
+    while (std::getline(f, line)) {
+        ++lineno;
+        // strip comment
+        auto ci = line.find('#');
+        if (ci != std::string::npos) line = line.substr(0, ci);
+        line = drpmTrim(line);
+        if (line.empty()) continue;
+        if (line[0] == '[') {
+            auto e = line.find(']');
+            section = (e != std::string::npos) ? line.substr(1, e-1) : "";
+            continue;
+        }
+        auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        std::string key = drpmTrim(line.substr(0, eq));
+        std::string val = drpmTrim(line.substr(eq+1));
+        // strip surrounding quotes from string values
+        auto strVal = [&]() -> std::string {
+            if (val.size() >= 2 && val.front()=='"' && val.back()=='"')
+                return val.substr(1, val.size()-2);
+            return val;
+        };
+        auto boolVal = [&]() -> bool {
+            return (val == "true" || val == "1" || val == "yes");
+        };
+        auto intVal = [&]() -> int {
+            try { return std::stoi(val); } catch(...) { return 1; }
+        };
+        if      (key=="name")        m.name        = strVal();
+        else if (key=="version")     m.version     = strVal();
+        else if (key=="main")        m.main_file   = strVal();
+        else if (key=="output")      m.output      = strVal();
+        else if (key=="release")     m.release     = boolVal();
+        else if (key=="debug")       m.debug_build = boolVal();
+        else if (key=="opt")         m.opt_level   = intVal();
+        else if (key=="link")        m.link_libs   = drpmParseArray(val);
+        else if (key=="search_dirs") m.search_dirs = drpmParseArray(val);
+        else if (key=="defines")     m.defines     = drpmParseArray(val);
+        // [build] section overrides
+        else if (section=="build" && key=="release")  m.release     = boolVal();
+        else if (section=="build" && key=="debug")    m.debug_build = boolVal();
+        else if (section=="build" && key=="opt")      m.opt_level   = intVal();
+        else if (section=="build" && key=="link")     m.link_libs   = drpmParseArray(val);
+        else if (section=="build" && key=="search_dirs") m.search_dirs = drpmParseArray(val);
+        else if (section=="build" && key=="defines")  m.defines     = drpmParseArray(val);
+        else if (section=="build" && key=="output")   m.output      = strVal();
+    }
+    if (m.name.empty()) { err = "manifest missing 'name' field"; return false; }
+    if (m.main_file.empty()) { err = "manifest missing 'main' field"; return false; }
+    return true;
+}
+
+static int runBuild(int argc, char* argv[], const Colors& C) {
+    namespace fs = std::filesystem;
+
+    // Look for dri.drpm in current directory
+    std::string manifest_path = "dri.drpm";
+    bool release_override = false, debug_override = false;
+    std::string output_override;
+
+    for (int i = 2; i < argc; ++i) {
+        std::string a = argv[i];
+        if      (a == "--release") release_override = true;
+        else if (a == "--debug")   debug_override   = true;
+        else if (a == "--output" && i+1 < argc) output_override = argv[++i];
+        else if (a == "--manifest" && i+1 < argc) manifest_path = argv[++i];
+    }
+
+    if (!fs::exists(manifest_path)) {
+        std::cerr << C.red << "dri: " << C.reset
+                  << "no dri.drpm found in current directory\n"
+                  << "  Create one with:\n\n"
+                  << "    name = \"myproject\"\n"
+                  << "    version = \"0.1.0\"\n"
+                  << "    main = \"src/main.dri\"\n\n";
+        return 1;
+    }
+
+    DrpmManifest manifest;
+    std::string parse_err;
+    if (!parseDrpm(manifest_path, manifest, parse_err)) {
+        std::cerr << C.red << "dri: dri.drpm parse error: " << C.reset << parse_err << "\n";
+        return 1;
+    }
+
+    if (release_override) manifest.release     = true;
+    if (debug_override)   manifest.debug_build = true;
+    if (!output_override.empty()) manifest.output = output_override;
+    if (manifest.output.empty()) manifest.output = manifest.name;
+
+    // Resolve paths relative to the manifest file's directory
+    fs::path manifest_dir = fs::path(manifest_path).parent_path();
+    auto resolve = [&](const std::string& p) -> std::string {
+        fs::path fp(p);
+        if (fp.is_absolute()) return p;
+        return (manifest_dir / fp).string();
+    };
+    manifest.main_file = resolve(manifest.main_file);
+    if (!manifest.output.empty() && !fs::path(manifest.output).is_absolute())
+        manifest.output = (manifest_dir / manifest.output).string();
+    for (auto& d : manifest.search_dirs) d = resolve(d);
+
+    std::cerr << C.cyan << "dri build" << C.reset
+              << "  " << manifest.name << " v" << manifest.version
+              << "  [" << (manifest.release ? "release" : manifest.debug_build ? "debug" : "dev") << "]\n"
+              << "  main: " << manifest.main_file
+              << "  →  " << manifest.output << "\n";
+
+    if (!fs::exists(manifest.main_file)) {
+        std::cerr << C.red << "dri: main file not found: " << C.reset << manifest.main_file << "\n";
+        return 1;
+    }
+
+    drv::CompileOptions opts;
+    opts.input_file   = manifest.main_file;
+    opts.output_exe   = manifest.output;
+    opts.release      = manifest.release;
+    opts.debug        = manifest.debug_build;
+    opts.opt_level    = manifest.opt_level;
+    opts.link_libs    = manifest.link_libs;
+    opts.search_dirs  = manifest.search_dirs;
+    opts.defines      = manifest.defines;
+    if (manifest.release) { opts.opt_level = 3; opts.native = true; opts.lto = true; }
+
+    SourceCache src_cache;
+    drv::Compiler compiler(opts);
+    auto result = compiler.compile();
+
+    for (auto& w : result.warnings)
+        printDiag(w, src_cache, C, /*is_warning=*/true);
+    if (!result.success) {
+        for (auto& e : result.errors)
+            printDiag(e, src_cache, C);
+        if (!result.backend_output.empty())
+            std::cerr << result.backend_output << "\n";
+        std::cerr << C.red << "build failed.\n" << C.reset;
+        return 1;
+    }
+    std::cerr << C.cyan << "build succeeded: " << C.reset << manifest.output << "\n";
+    return 0;
+}
+
+static int runInit(int argc, char* argv[], const Colors& C) {
+    namespace fs = std::filesystem;
+    std::string name = (argc >= 3) ? argv[2] : "myproject";
+
+    if (fs::exists("dri.drpm")) {
+        std::cerr << C.yellow << "dri init: " << C.reset
+                  << "dri.drpm already exists — not overwriting\n";
+        return 1;
+    }
+
+    // Create directory structure
+    fs::create_directories("src");
+    fs::create_directories("tests");
+
+    // dri.drpm
+    {
+        std::ofstream f("dri.drpm");
+        f << "name = \"" << name << "\"\n"
+          << "version = \"0.1.0\"\n"
+          << "main = \"src/main.dri\"\n"
+          << "output = \"bin/" << name << "\"\n\n"
+          << "[build]\n"
+          << "release = false\n"
+          << "link = []\n";
+    }
+
+    // src/main.dri
+    {
+        std::ofstream f("src/main.dri");
+        f << "module " << name << ";\n\n"
+          << "print(\"Hello from " << name << "!\");\n";
+    }
+
+    // tests/hello.dri
+    {
+        std::ofstream f("tests/hello.dri");
+        f << "# " << name << " basic test\n"
+          << "module test_hello;\n"
+          << "print(\"test ok\");\n";
+    }
+
+    // .gitignore
+    {
+        std::ofstream f(".gitignore");
+        f << "bin/\n.dri_cache/\n*.cpp\n";
+    }
+
+    fs::create_directories("bin");
+
+    std::cerr << C.cyan << "dri init" << C.reset << "  " << name << "\n"
+              << "  created: dri.drpm  src/main.dri  tests/hello.dri  .gitignore\n"
+              << "  run with: dri build && ./bin/" << name << "\n";
+    return 0;
+}
+
+static int runTest(int argc, char* argv[], const Colors& C) {
+    namespace fs = std::filesystem;
+
+    // Find test files
+    std::string test_dir = "tests";
+    if (argc >= 3) test_dir = argv[2];
+
+    std::string dri_bin = argv[0];  // path to this compiler
+    if (!fs::exists(dri_bin)) dri_bin = "./cmake-build-debug/dri";
+
+    if (!fs::exists(test_dir)) {
+        std::cerr << C.red << "dri test: " << C.reset
+                  << "no tests/ directory found\n";
+        return 1;
+    }
+
+    int pass = 0, fail = 0;
+    std::vector<std::string> failed;
+
+    for (auto& entry : fs::directory_iterator(test_dir)) {
+        if (entry.path().extension() != ".dri") continue;
+        std::string src = entry.path().string();
+        std::string name = entry.path().stem().string();
+
+        // Check for expected output file
+        fs::path exp_path = entry.path().parent_path() / (name + ".expected");
+
+        std::string tmp_out = "/tmp/dri_test_" + name + ".out";
+        std::string cmd = dri_bin + " \"" + src + "\" > \"" + tmp_out + "\" 2>/dev/null";
+        int rc = std::system(cmd.c_str());
+
+        if (rc != 0) {
+            std::cerr << "  FAIL: " << name << " (exit " << rc << ")\n";
+            ++fail;
+            failed.push_back(name);
+            continue;
+        }
+
+        if (fs::exists(exp_path)) {
+            // Compare with expected
+            std::string cmp_cmd = "diff -q \"" + exp_path.string() + "\" \"" + tmp_out + "\" >/dev/null 2>&1";
+            if (std::system(cmp_cmd.c_str()) == 0) {
+                std::cerr << "  PASS: " << name << "\n";
+                ++pass;
+            } else {
+                std::cerr << "  FAIL: " << name << " (output mismatch)\n";
+                ++fail;
+                failed.push_back(name);
+            }
+        } else {
+            // No expected file: pass if exit code 0
+            std::cerr << "  PASS: " << name << " (exit-code only)\n";
+            ++pass;
+        }
+        fs::remove(tmp_out);
+    }
+
+    std::cerr << "\n  PASS: " << pass << "   FAIL: " << fail << "\n";
+    if (!failed.empty()) {
+        std::cerr << "  Failed: ";
+        for (auto& f : failed) std::cerr << f << " ";
+        std::cerr << "\n";
+    }
+    return fail == 0 ? 0 : 1;
+}
+
 static void printUsage(const char* prog) {
     std::cerr
         << "dri compiler — transpiles .dri source to C++20\n\n"
         << "Usage:\n"
         << "  " << prog << " <input.dri>               compile and run (script mode)\n"
-        << "  " << prog << " <input.dri> [options]\n\n"
+        << "  " << prog << " <input.dri> [options]\n"
+        << "  " << prog << " build                     build from dri.drpm manifest\n"
+        << "  " << prog << " init [name]               scaffold a new project\n"
+        << "  " << prog << " test [dir]                run tests in tests/ directory\n\n"
         << "Options:\n"
         << "  --exe <file>      Build executable\n"
         << "  --cpp <file>      Output C++ source only\n"
@@ -230,6 +596,10 @@ static void printUsage(const char* prog) {
         << "  --sysroot <path>  Sysroot for cross-compilation\n"
         << "  --cross-cxx <cc>  Explicit cross-compiler binary\n"
         << "  --source-map <f>  Emit source-map JSON  (cpp_line → dri_line)\n"
+        << "  --strict          Treat all warnings as errors\n"
+        << "  --link <libs>     Link system libraries  (comma-separated, e.g. m,pthread)\n"
+        << "  --lang <ko|en|ja> Diagnostic message language (default: en)\n"
+        << "  --bench-json <f>  Write @bench timings to a JSON file at program exit\n"
         << "  -D<FLAG>          Define compile-time flag for static_if\n"
         << "  --version         Show compiler version\n"
         << "  --help            Show this help\n\n"
@@ -251,9 +621,14 @@ int main(int argc, char* argv[]) {
         printUsage(argv[0]); return 0;
     }
     if (std::strcmp(argv[1], "--version") == 0) {
-        std::cout << "dri compiler v0.1.0 (spec: 2026-05, C++20 backend)\n";
+        std::cout << "dri compiler v0.1.1 (spec: 2026-05, C++20 backend)\n";
         return 0;
     }
+
+    const Colors C_early = makeColors(isatty(STDERR_FILENO) != 0);
+    if (std::strcmp(argv[1], "build") == 0) return runBuild(argc, argv, C_early);
+    if (std::strcmp(argv[1], "init")  == 0) return runInit (argc, argv, C_early);
+    if (std::strcmp(argv[1], "test")  == 0) return runTest (argc, argv, C_early);
 
     drv::CompileOptions opts;
     opts.input_file = argv[1];
@@ -306,6 +681,26 @@ int main(int argc, char* argv[]) {
             opts.cross_cxx = argv[++i];
         } else if (arg == "--source-map" && i+1 < argc) {
             opts.source_map_file = argv[++i];
+        } else if (arg == "--strict") {
+            opts.strict = true;
+        } else if (arg == "--bench-json" && i+1 < argc) {
+            opts.bench_json_file = argv[++i];
+        } else if (arg == "--lang" && i+1 < argc) {
+            opts.lang = argv[++i];
+            if (opts.lang != "ko" && opts.lang != "en" && opts.lang != "ja") {
+                std::cerr << "dri: --lang must be ko, en, or ja (got '" << opts.lang << "')\n";
+                return 1;
+            }
+            g_lang = opts.lang;
+        } else if (arg == "--link" && i+1 < argc) {
+            // Accept comma-separated list: --link m,pthread  or  --link m --link pthread
+            std::string libs = argv[++i];
+            std::string cur;
+            for (char c : libs) {
+                if (c == ',') { if (!cur.empty()) { opts.link_libs.push_back(cur); cur.clear(); } }
+                else cur += c;
+            }
+            if (!cur.empty()) opts.link_libs.push_back(cur);
         } else if (arg.size() > 2 && arg[0]=='-' && arg[1]=='D') {
             opts.defines.push_back(arg.substr(2));
         } else {
@@ -335,8 +730,27 @@ int main(int argc, char* argv[]) {
     auto result = compiler.compile();
 
     // ── Warnings ─────────────────────────────────────────────────────────────
-    for (auto& w : result.warnings)
-        printDiag(w, src_cache, C, /*is_warning=*/true);
+    // In --strict mode promote warnings to errors before checking result.errors.
+    if (opts.strict && !result.warnings.empty()) {
+        for (auto& w : result.warnings) {
+            // Re-print as error
+            std::string as_err = w;
+            // Replace " warning:" with " error:" for the strict-mode display
+            auto pos = as_err.find(" warning:");
+            if (pos != std::string::npos) as_err.replace(pos, 9, " error:");
+            printDiag(as_err, src_cache, C, /*is_warning=*/false);
+        }
+        std::cerr << C.red << result.warnings.size() << " warning(s) promoted to error(s) by --strict\n" << C.reset;
+        // Show warning count as normal path
+        if (result.success) {
+            // Fail the build
+            std::cerr << C.red << result.warnings.size() << " error(s) generated (--strict).\n" << C.reset;
+            return EXIT_COMPILE;
+        }
+    } else {
+        for (auto& w : result.warnings)
+            printDiag(w, src_cache, C, /*is_warning=*/true);
+    }
 
     // ── Errors ───────────────────────────────────────────────────────────────
     if (!result.errors.empty()) {
@@ -412,9 +826,10 @@ int main(int argc, char* argv[]) {
         // ── Summary ──────────────────────────────────────────────────────────
         int nerr  = (int)result.errors.size();
         int nwarn = (int)result.warnings.size();
-        std::cerr << C.bold << C.red << nerr << " error(s)";
-        if (nwarn > 0) std::cerr << C.reset << C.bold << ", " << nwarn << " warning(s)";
-        std::cerr << " generated." << C.reset << '\n';
+        const auto& LS = getLang();
+        std::cerr << C.bold << C.red << nerr << " " << LS.generated_errors;
+        if (nwarn > 0) std::cerr << C.reset << C.bold << "  " << nwarn << " " << LS.generated_warnings;
+        std::cerr << C.reset << '\n';
 
         // Clean up temp exe if it was partially created
         if (run_mode && std::filesystem::exists(tmp_exe))
@@ -432,7 +847,7 @@ int main(int argc, char* argv[]) {
     // ── Success (warnings only) ───────────────────────────────────────────────
     if (!result.warnings.empty()) {
         std::cerr << C.bold << result.warnings.size()
-                  << " warning(s) generated." << C.reset << '\n';
+                  << " " << getLang().generated_warnings << C.reset << '\n';
     }
 
     if (opts.check_only) {

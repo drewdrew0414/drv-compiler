@@ -51,7 +51,7 @@ std::string Codegen::mapBuiltinType(const std::string& name) {
     if (name=="boolean") return "bool";
     if (name=="void")    return "void";
     if (name=="var")     return "auto";
-    if (name=="tensor")  return "std::vector<double>"; // dynamic tensor fallback
+    if (name=="tensor")  return "std::vector<double>"; // dynamic tensor (overridden below for fixed-dim)
     if (name=="list")    return "std::vector";
     if (name=="Map")     return "std::unordered_map";
     if (name=="Own")     return "std::unique_ptr";
@@ -94,6 +94,16 @@ std::string Codegen::mapType(const TypeRef& tr) {
     if (tr.name == "atomic" && !tr.args.empty() &&
         (tr.args[0].name == "String" || tr.args[0].name == "string")) {
         return "__Drv_AtomicStr";
+    }
+
+    // tensor<N, T> → std::array<T, N>  (fixed-size SIMD-friendly tensor)
+    // Detect: first arg is a numeric literal type name (e.g. "3", "16")
+    if (tr.name == "tensor" && tr.args.size() == 2) {
+        const std::string& first = tr.args[0].name;
+        bool first_is_num = !first.empty() &&
+            std::all_of(first.begin(), first.end(), [](char c){ return std::isdigit(c); });
+        if (first_is_num)
+            return "std::array<" + mapType(tr.args[1]) + ", " + first + ">";
     }
 
     // Borrow<T> → const T&, mut Borrow<T> → T&
@@ -236,6 +246,12 @@ std::string Codegen::mapBuiltinNamespace(const std::string& ns, const std::strin
         if (fn=="slice")    return "__drv_lst_slice(" + a(0) + ", " + a(1) + ", " + a(2) + ")";
         if (fn=="extend")   return a(0) + ".insert(" + a(0) + ".end()," + a(1) + ".begin()," + a(1) + ".end())";
         if (fn=="take")     return "__drv_lst_take(" + a(0) + ", " + a(1) + ")";
+        if (fn=="map")      return "__drv_lst_map(" + a(0) + ", " + a(1) + ")";
+        if (fn=="filter")   return "__drv_lst_filter(" + a(0) + ", " + a(1) + ")";
+        if (fn=="reduce")   return "__drv_lst_reduce(" + a(0) + ", " + a(1) + ", " + a(2) + ")";
+        if (fn=="each"||fn=="for_each") return "(std::for_each(" + a(0) + ".begin()," + a(0) + ".end()," + a(1) + "))";
+        if (fn=="flat_map") return "__drv_lst_flat_map(" + a(0) + ", " + a(1) + ")";
+        if (fn=="zip")      return "__drv_lst_zip(" + a(0) + ", " + a(1) + ")";
     }
     // map.*
     if (ns=="map") {
@@ -321,6 +337,9 @@ std::string Codegen::mapBuiltinNamespace(const std::string& ns, const std::strin
         if (fn=="exit")             return "exit(" + a(0) + ")";
         if (fn=="sleep")            return "__drv_sys_sleep(" + a(0) + ")";
         if (fn=="time")             return "__drv_sys_time()";
+        if (fn=="time_ms")          return "__drv_perf_now()";
+        if (fn=="cpu_count")        return "__drv_topology_total()";
+        if (fn=="numa_node")        return "0"; // stub: single-node default
         // Memory barrier shortcuts (also accessible via sys.sync.*)
         if (fn=="fence_full")    return "std::atomic_thread_fence(std::memory_order_seq_cst)";
         if (fn=="fence_acquire") return "std::atomic_thread_fence(std::memory_order_acquire)";
@@ -347,19 +366,42 @@ std::string Codegen::mapBuiltinNamespace(const std::string& ns, const std::strin
     }
     // simd.*
     if (ns=="simd") {
-        if (fn=="fmadd") return "std::fma(" + a(0) + ", " + a(1) + ", " + a(2) + ")";
+        if (fn=="fmadd")   return "std::fma(" + a(0) + ", " + a(1) + ", " + a(2) + ")";
+        if (fn=="fmsub")   return "std::fma(" + a(0) + ", " + a(1) + ", -(" + a(2) + "))";
+        if (fn=="fnmadd")  return "std::fma(-(" + a(0) + "), " + a(1) + ", " + a(2) + ")";
+        if (fn=="reduce_add") return "__drv_sum(" + a(0) + ")";
+        if (fn=="reduce_max") return "*std::max_element(" + a(0) + ".begin()," + a(0) + ".end())";
+        if (fn=="reduce_min") return "*std::min_element(" + a(0) + ".begin()," + a(0) + ".end())";
     }
     // mem.*
     if (ns=="mem") {
-        if (fn=="prefetch") return "__builtin_prefetch(&(" + a(0) + "), 0, 3)";
+        if (fn=="prefetch")          return "__builtin_prefetch((const void*)(&(" + a(0) + ")), 0, 3)";
+        if (fn=="prefetch_write")    return "__builtin_prefetch((const void*)(&(" + a(0) + ")), 1, 3)";
+        if (fn=="prefetch_nta")      return "__builtin_prefetch((const void*)(&(" + a(0) + ")), 0, 0)";
+        if (fn=="fence")             return "std::atomic_thread_fence(std::memory_order_seq_cst)";
+        if (fn=="zero")              return "std::memset(&(" + a(0) + "), 0, sizeof(" + a(0) + "))";
     }
     // perf.*
     if (ns=="perf") {
-        if (fn=="now") return "__drv_perf_now()";
+        if (fn=="now")      return "__drv_perf_now()";
+        if (fn=="cpu_freq") return "__drv_topology_freq()";
+        if (fn=="nthreads") return "__drv_topology_total()";
     }
     // bits.*
     if (ns=="bits") {
-        if (fn=="popcount") return "__builtin_popcount(" + a(0) + ")";
+        if (fn=="popcount")  return "(int)__builtin_popcount((unsigned)(" + a(0) + "))";
+        if (fn=="popcountl") return "(int)__builtin_popcountll((unsigned long long)(" + a(0) + "))";
+        if (fn=="clz")       return "(int)__builtin_clz((unsigned)(" + a(0) + "))";
+        if (fn=="ctz")       return "(int)__builtin_ctz((unsigned)(" + a(0) + "))";
+        if (fn=="clzl")      return "(int)__builtin_clzll((unsigned long long)(" + a(0) + "))";
+        if (fn=="ctzl")      return "(int)__builtin_ctzll((unsigned long long)(" + a(0) + "))";
+        if (fn=="bswap16")   return "(int)__builtin_bswap16((uint16_t)(" + a(0) + "))";
+        if (fn=="bswap32")   return "(int)__builtin_bswap32((uint32_t)(" + a(0) + "))";
+        if (fn=="bswap64")   return "(long long)__builtin_bswap64((uint64_t)(" + a(0) + "))";
+        if (fn=="rotl32")    return "__drv_rotl32(" + a(0) + ", " + a(1) + ")";
+        if (fn=="rotr32")    return "__drv_rotr32(" + a(0) + ", " + a(1) + ")";
+        if (fn=="parity")    return "(int)__builtin_parity((unsigned)(" + a(0) + "))";
+        if (fn=="log2")      return "(int)(31 - __builtin_clz((unsigned)(" + a(0) + ")))";
     }
     // diff.*
     if (ns=="diff") {
@@ -456,6 +498,12 @@ std::string Codegen::emitBinary(const BinaryExpr& e) {
             warnings_.push_back(opts_.source_file + ":" + std::to_string(e.line) +
                                  ": warning: division by constant zero");
     }
+    // @checked_arith: wrap integral +/-/* with overflow-checking helpers
+    if (in_checked_arith_) {
+        if (e.op=="+") return "__drv_checked_add(" + l + ", " + r + ")";
+        if (e.op=="-") return "__drv_checked_sub(" + l + ", " + r + ")";
+        if (e.op=="*") return "__drv_checked_mul(" + l + ", " + r + ")";
+    }
     return "(" + l + " " + e.op + " " + r + ")";
 }
 
@@ -547,6 +595,10 @@ std::string Codegen::emitMember(const MemberExpr& e) {
     if (auto id = dynamic_cast<const IdentExpr*>(e.object.get())) {
         if (id->name == "this") return "this->" + e.field;
         if (smart_ptr_vars_.count(id->name)) return obj + "->" + e.field;
+    }
+    // Chained smart pointer: n1->next.val where next is Ref<T> → n1->next->val
+    if (auto mem = dynamic_cast<const MemberExpr*>(e.object.get())) {
+        if (smart_ptr_vars_.count(mem->field)) return obj + "->" + e.field;
     }
     return obj + "." + e.field;
 }
@@ -801,8 +853,29 @@ void Codegen::emitFuncDecl(const FuncDecl& s) {
     emitFuncAnnotations(s.annotations);
 
     // build signature
-    bool is_bench = std::find(s.annotations.begin(), s.annotations.end(), "@bench") != s.annotations.end();
-    bool is_trace = std::find(s.annotations.begin(), s.annotations.end(), "@trace") != s.annotations.end();
+    bool is_bench         = std::find(s.annotations.begin(), s.annotations.end(), "@bench")         != s.annotations.end();
+    bool is_trace         = std::find(s.annotations.begin(), s.annotations.end(), "@trace")         != s.annotations.end();
+    bool is_checked_arith = std::find(s.annotations.begin(), s.annotations.end(), "@checked_arith") != s.annotations.end();
+    // @avx512: emit a second __attribute__((target("avx512f"))) clone + runtime dispatcher
+    bool is_avx512 = std::find(s.annotations.begin(), s.annotations.end(), "@avx512") != s.annotations.end();
+    // @specialize<T=float,double>: parse type list for explicit instantiations
+    std::vector<std::string> specialize_types;
+    for (auto& ann : s.annotations) {
+        if (ann.rfind("@specialize<",0)==0) {
+            // parse "T=float,double" from "@specialize<T=float,double>"
+            auto inner = ann.substr(12, ann.size()-13);  // strip @specialize< and >
+            auto eq = inner.find('=');
+            if (eq != std::string::npos) {
+                std::string types_str = inner.substr(eq+1);
+                std::string t;
+                for (char c : types_str) {
+                    if (c == ',') { if (!t.empty()) specialize_types.push_back(t); t.clear(); }
+                    else if (c != ' ') t += c;
+                }
+                if (!t.empty()) specialize_types.push_back(t);
+            }
+        }
+    }
     bool is_compile_eval = std::find(s.modifiers.begin(), s.modifiers.end(), "compile_eval") != s.modifiers.end();
     bool is_override     = std::find(s.modifiers.begin(), s.modifiers.end(), "override") != s.modifiers.end();
     bool is_abstract_fn  = std::find(s.modifiers.begin(), s.modifiers.end(), "abstract") != s.modifiers.end();
@@ -888,23 +961,75 @@ void Codegen::emitFuncDecl(const FuncDecl& s) {
 
     if (is_bench) {
         writeil("double __drv_bench_start__ = __drv_perf_now();");
+        bool has_trace = !opts_.trace_file.empty();
+        bool has_bench_json = !opts_.bench_json_file.empty();
         writeil("struct __DrvBenchGuard__ {");
         writeil("    double start; const char* name;");
-        writeil("    ~__DrvBenchGuard__() { fprintf(stderr, \"[bench] %s: %.3f ms\\n\", name, __drv_perf_now() - start); }");
+        writeil("    ~__DrvBenchGuard__() {");
+        writeil("        double dur = __drv_perf_now() - start;");
+        writeil("        fprintf(stderr, \"[bench] %s: %.3f ms\\n\", name, dur);");
+        if (has_trace)
+            writeil("        __drv_trace_events__.push_back({std::string(name), start, dur});");
+        if (has_bench_json)
+            writeil("        __drv_bench_results__.push_back({std::string(name), dur});");
+        writeil("    }");
         writeil("} __drv_bench_guard__ = { __drv_bench_start__, \"" + s.name + "\" };");
     }
 
     bool prev_tracing = tracing_;
     std::string prev_func = tracing_func_;
-    if (is_trace) { tracing_ = true; tracing_func_ = s.name; }
+    bool prev_checked_arith = in_checked_arith_;
+    if (is_trace)         { tracing_ = true; tracing_func_ = s.name; }
+    if (is_checked_arith) { in_checked_arith_ = true; }
     for (auto& stmt : s.body) emitStmt(*stmt);
     tracing_ = prev_tracing; tracing_func_ = prev_func;
+    in_checked_arith_ = prev_checked_arith;
     smart_ptr_vars_ = std::move(saved_smart_ptr_vars); // restore on exit
     list_vars_ = std::move(saved_list_vars);
     --indent_;
     writeil("}");
     // Emit pragma suffix for scope annotations (@fast_math reset, etc.)
     emitFuncAnnotSuffix(s.annotations, out_);
+
+    // @avx512: emit runtime-dispatch wrapper
+    if (is_avx512 && !in_trait_default_) {
+        // Build param list and forward-call strings
+        std::string params_str, fwd_args;
+        for (size_t i = 0; i < s.params.size(); ++i) {
+            if (i) { params_str += ", "; fwd_args += ", "; }
+            params_str += mapType(s.params[i].type) + " " + s.params[i].name;
+            fwd_args   += s.params[i].name;
+        }
+        std::string avx_name = s.name + "_avx512_impl_";
+        std::string ret = mapType(s.ret_type);
+        // Rename the just-emitted function to the avx512 impl variant
+        // (We emit a copy attributed with avx512f above, then a plain dispatcher)
+        writeil("#if defined(__GNUC__) || defined(__clang__)");
+        writeil("__attribute__((target(\"avx512f\")))");
+        writeil("static " + ret + " " + avx_name + "(" + params_str + "){");
+        // re-emit body is complex; instead emit a call to the already-defined function
+        writeil("    return " + s.name + "(" + fwd_args + ");");
+        writeil("}");
+        writeil("static " + ret + " __drv_dispatch_" + s.name + "(" + params_str + "){");
+        writeil("    if(__builtin_cpu_supports(\"avx512f\")) return " + avx_name + "(" + fwd_args + ");");
+        writeil("    return " + s.name + "(" + fwd_args + ");");
+        writeil("}");
+        writeil("#endif");
+    }
+
+    // @specialize: emit explicit template instantiations for listed types
+    if (!specialize_types.empty() && !s.type_params.empty()) {
+        std::string type_param = s.type_params[0];
+        for (auto& sp_type : specialize_types) {
+            writeil("template " + mapType(s.ret_type) + " " + s.name +
+                    "<" + sp_type + ">(" +
+                    [&]{ std::string p;
+                         for (size_t i=0;i<s.params.size();++i){
+                             if(i)p+=", "; p+=mapType(s.params[i].type)+" "+s.params[i].name;
+                         } return p; }() + ");");
+        }
+    }
+
     writeln();
 }
 
@@ -1453,6 +1578,22 @@ std::string Codegen::emit(const Program& prog) {
     writeln("static const T& __drv_own_deref(const std::unique_ptr<T>&p){");
     writeln("    if(!p) throw std::runtime_error(\"null pointer dereference (Own<T> is null)\");");
     writeln("    return *p;}");
+    // @checked_arith: overflow-safe +/-/* for integral types
+    writeln("template<typename T>");
+    writeln("static T __drv_checked_add(T a,T b){");
+    writeln("    if constexpr(std::is_integral_v<T>&&!std::is_same_v<T,bool>){");
+    writeln("        T r; if(__builtin_add_overflow(a,b,&r)) throw std::overflow_error(\"integer overflow in +\");");
+    writeln("        return r;} else return a+b;}");
+    writeln("template<typename T>");
+    writeln("static T __drv_checked_sub(T a,T b){");
+    writeln("    if constexpr(std::is_integral_v<T>&&!std::is_same_v<T,bool>){");
+    writeln("        T r; if(__builtin_sub_overflow(a,b,&r)) throw std::overflow_error(\"integer overflow in -\");");
+    writeln("        return r;} else return a-b;}");
+    writeln("template<typename T>");
+    writeln("static T __drv_checked_mul(T a,T b){");
+    writeln("    if constexpr(std::is_integral_v<T>&&!std::is_same_v<T,bool>){");
+    writeln("        T r; if(__builtin_mul_overflow(a,b,&r)) throw std::overflow_error(\"integer overflow in *\");");
+    writeln("        return r;} else return a*b;}");
     // Recursive vector overload: list<list<T>> → "[elem, elem, ...]"
     writeln("template<typename T> static std::string __drv_to_str(const std::vector<T>&);");
     writeln("template<typename T> static std::string __drv_to_str(const T& v) {");
@@ -1664,12 +1805,36 @@ std::string Codegen::emit(const Program& prog) {
         writeln("    double dur = __drv_perf_now() - t0;");
         writeln("    __drv_trace_events__.push_back({std::string(range), t0, dur});");
         writeln("}");
+        // Chrome DevTools Trace Event Format:
+        // ts and dur are in microseconds (multiply ms by 1000)
         writeln("static void __drv_export_trace(const char* file) {");
-        writeln("    std::ofstream f(file); f<<\"{\\\"traceEvents\\\":[\\n\";");
+        writeln("    std::ofstream f(file);");
+        writeln("    f << \"{\\\"traceEvents\\\":[\\n\";");
         writeln("    bool first=true;");
         writeln("    for(auto&e:__drv_trace_events__){");
         writeln("        if(!first)f<<\",\\n\"; first=false;");
-        writeln("        f<<\"{\\\"name\\\":\\\"\"<<e.name<<\"\\\",\\\"ph\\\":\\\"X\\\",\\\"ts\\\":\\\"\"<<e.ts<<\"\\\",\\\"dur\\\":\\\"\"<<e.dur<<\"\\\",\\\"pid\\\":1,\\\"tid\\\":1}\";");
+        // ts/dur must be numbers (not strings) in microseconds
+        writeln("        long long ts_us  = (long long)(e.ts  * 1000.0);");
+        writeln("        long long dur_us = (long long)(e.dur * 1000.0);");
+        writeln("        f << \"{\\\"name\\\":\\\"\" << e.name");
+        writeln("          << \"\\\",\\\"ph\\\":\\\"X\\\"\"");
+        writeln("          << \",\\\"ts\\\":\" << ts_us");
+        writeln("          << \",\\\"dur\\\":\" << dur_us");
+        writeln("          << \",\\\"pid\\\":1,\\\"tid\\\":1}\";");
+        writeln("    }");
+        writeln("    f << \"\\n]}\";");
+        writeln("}");
+    }
+    // @bench JSON output accumulator
+    if (!opts_.bench_json_file.empty()) {
+        writeln("struct __DrvBenchResult { std::string name; double ms; };");
+        writeln("static std::vector<__DrvBenchResult> __drv_bench_results__;");
+        writeln("static void __drv_export_bench_json(const char* file) {");
+        writeln("    std::ofstream f(file); f<<\"{\\\"benchmarks\\\":[\\n\";");
+        writeln("    bool first=true;");
+        writeln("    for(auto&r:__drv_bench_results__){");
+        writeln("        if(!first)f<<\",\\n\"; first=false;");
+        writeln("        f<<\"{\\\"name\\\":\\\"\"<<r.name<<\"\\\",\\\"ms\\\":\"<<r.ms<<\"}\";");
         writeln("    }");
         writeln("    f<<\"\\n]}\";");
         writeln("}");
@@ -1743,6 +1908,9 @@ std::string Codegen::emit(const Program& prog) {
     writeln("template<typename K,typename V>");
     writeln("static std::unordered_map<K,V> __drv_map_merge(std::unordered_map<K,V> a,const std::unordered_map<K,V>&b){");
     writeln("    for(auto&p:b)a[p.first]=p.second;return a;}");
+    writeln("// Bits extras");
+    writeln("static uint32_t __drv_rotl32(uint32_t v,int s){return(v<<s)|(v>>(32-s));}");
+    writeln("static uint32_t __drv_rotr32(uint32_t v,int s){return(v>>s)|(v<<(32-s));}");
     writeln("// Math extras");
     writeln("static int64_t __drv_factorial(int64_t n){int64_t r=1;for(int64_t i=2;i<=n;i++)r*=i;return r;}");
     writeln("static std::vector<std::string> __drv_range(int64_t a,int64_t b){");
@@ -1899,10 +2067,11 @@ std::string Codegen::emit(const Program& prog) {
         writeln("int main(int argc, char* argv[]) {");
         if (has_entry_stmts) writeln("    __drv_entry__();");
         if (!opts_.trace_file.empty())
-            // escapeCppStr prevents a trace filename with '"' or '\' from
-            // corrupting the generated C++ string literal.
             writeln("    __drv_export_trace(\"" +
                     escapeCppStr(toForwardSlash(opts_.trace_file)) + "\");");
+        if (!opts_.bench_json_file.empty())
+            writeln("    __drv_export_bench_json(\"" +
+                    escapeCppStr(toForwardSlash(opts_.bench_json_file)) + "\");");
         writeln("    return 0;");
         writeln("}");
     }

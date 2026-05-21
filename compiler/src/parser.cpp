@@ -128,11 +128,18 @@ TypeRef Parser::parseTypeRef() {
         tr.name = "void";
     }
 
-    // generic args: Foo<T, U>
+    // generic args: Foo<T, U> — also accept integer literals as dimension params
     if (check(TK::Lt)) {
         advance();
         while (!check(TK::Gt) && !check(TK::GtGt) && !check(TK::Eof)) {
-            tr.args.push_back(parseTypeRef());
+            // Integer literal as a dimension (e.g. tensor<3, double>)
+            if (check(TK::LitInt)) {
+                TypeRef dim;
+                dim.name = advance().value;
+                tr.args.push_back(dim);
+            } else {
+                tr.args.push_back(parseTypeRef());
+            }
             if (!match(TK::Comma)) break;
         }
         if (check(TK::GtGt)) {
